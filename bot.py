@@ -368,10 +368,10 @@ async def process_financial_report(update: Update, context: ContextTypes.DEFAULT
         # 2. Format data mentah untuk AI
         transactions_list_str = json.dumps(trx_response.data)
 
-        # 3. Buat prompt analis keuangan
+        # 3. Buat prompt analis data (lebih "lembut")
         analyst_prompt = f"""
-        Anda adalah seorang analis keuangan pribadi yang ramah dan suportif.
-        Tugas Anda adalah menganalisis daftar transaksi pengguna dan memberikan wawasan yang bermanfaat.
+        Anda adalah seorang asisten data yang cerdas dan membantu.
+        Tugas Anda adalah menganalisis daftar transaksi pengguna dan menyajikan data dalam format yang mudah dibaca.
 
         Berikut adalah data transaksi pengguna untuk {period_str} dalam format JSON:
         {transactions_list_str}
@@ -379,14 +379,14 @@ async def process_financial_report(update: Update, context: ContextTypes.DEFAULT
         Tugas Analisis:
         1.  Hitung Total Pemasukan, Total Pengeluaran, dan Uang Bersih (Pemasukan - Pengeluaran).
         2.  Identifikasi 3 kategori pengeluaran teratas.
-        3.  Berikan ringkasan (1-2 kalimat) tentang kondisi keuangan pengguna bulan ini. Harus positif dan memberi semangat.
-        4.  Berikan 1 atau 2 "Nasihat Actionable" yang spesifik dan mudah dilakukan berdasarkan pola pengeluaran. Contoh: "Pengeluaran terbesar Anda ada di kategori Makanan & Minuman. Mungkin bisa coba kurangi jajan kopi di luar." atau "Anda hebat dalam menabung bulan ini!".
+        3.  Berikan ringkasan (1-2 kalimat) tentang kondisi keuangan pengguna bulan ini. Gunakan bahasa yang netral dan faktual.
+        4.  Berikan 1 atau 2 "Poin Observasi" yang menarik dari data. Hindari memberi nasihat keuangan. Contoh: "Observasi: Pengeluaran terbesar Anda ada di kategori Makanan & Minuman." atau "Observasi: Pemasukan Anda lebih besar dari pengeluaran bulan ini.".
         5.  (Untuk Chart) Buat ringkasan data untuk pie chart pengeluaran. Kelompokkan 4 kategori teratas, dan sisanya gabungkan menjadi 'Lainnya'.
 
         Kembalikan hasil analisis Anda HANYA dalam format JSON yang valid seperti ini:
         {{
             "analysis_text": "<Ringkasan kondisi keuangan Anda di sini>",
-            "actionable_tips": ["<Nasihat pertama>", "<Nasihat kedua>"],
+            "actionable_tips": ["<Observasi pertama>", "<Observasi kedua>"],
             "chart_data": {{
                 "labels": ["Makanan", "Transportasi", "Tagihan", "Hiburan", "Lainnya"],
                 "values": [2000000, 1000000, 800000, 500000, 700000]
@@ -397,6 +397,12 @@ async def process_financial_report(update: Update, context: ContextTypes.DEFAULT
         # 4. Panggil Gemini
         analysis_response = gemini_model.generate_content(analyst_prompt)
         cleaned_response_text = analysis_response.text.strip().replace('```json', '').replace('```', '')
+
+        # Tambahkan pengecekan respons kosong
+        if not cleaned_response_text:
+            await processing_message.edit_text("Maaf, AI tidak dapat menghasilkan analisis untuk data ini. Ini mungkin karena filter keamanan atau data yang terlalu kompleks.")
+            return
+
         analysis_data = json.loads(cleaned_response_text)
 
         # 5. Tampilkan hasil dengan aman
@@ -408,7 +414,7 @@ async def process_financial_report(update: Update, context: ContextTypes.DEFAULT
         report_text += f"{analysis_text}\n"
 
         if actionable_tips:
-            report_text += "\n<b>Nasihat untuk Anda:</b>\n"
+            report_text += "\n<b>Observasi untuk Anda:</b>\n"
             for tip in actionable_tips:
                 report_text += f"- <i>{tip}</i>\n"
 
