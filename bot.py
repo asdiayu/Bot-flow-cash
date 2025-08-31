@@ -121,14 +121,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
             # Cek jika ada error saat menyimpan
             if db_response.data:
+                # Panggil RPC untuk mendapatkan saldo terbaru
+                rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
+                current_balance = rpc_response.data if rpc_response.data is not None else 0
+
                 # Kirim konfirmasi ke user
                 confirmation_text = (
                     f"✅ Berhasil dicatat!\n\n"
                     f"Jenis: {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
                     f"Jumlah: Rp{amount:,.0f}\n"
-                    f"Deskripsi: {description}"
+                    f"Deskripsi: {description}\n\n"
+                    f"💰 **Saldo Anda saat ini: Rp{current_balance:,.0f}**"
                 )
-                await processing_message.edit_text(confirmation_text)
+                await processing_message.edit_text(confirmation_text, parse_mode='HTML')
             else:
                 logger.error(f"Error saving to Supabase: {db_response.error}")
                 await processing_message.edit_text("Maaf, terjadi kesalahan saat menyimpan data. Silakan coba lagi.")
