@@ -433,6 +433,9 @@ def main() -> None:
             CommandHandler("month", summary_month),
             CommandHandler("cancel", cancel),
         ],
+        per_user=True,
+        per_message=False,
+        allow_reentry=True
     )
 
     # Daftarkan handler utama (ConversationHandler)
