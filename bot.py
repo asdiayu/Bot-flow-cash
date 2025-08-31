@@ -75,11 +75,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         - "amount": angka (integer atau float) dari jumlah transaksi.
         - "description": deskripsi singkat dari transaksi.
 
+        ATURAN PENTING:
+        1.  Prioritaskan "expense" jika ada kata kunci seperti: 'bayar', 'beli', 'biaya', 'untuk', 'kasih', 'keluar', 'jajan'.
+        2.  Prioritaskan "income" jika ada kata kunci seperti: 'dapat', 'terima', 'gaji', 'bonus', 'dari', 'masuk'.
+        3.  Untuk kasus ambigu seperti "uang bulanan", jika tidak ada kata kunci lain, anggap itu sebagai "expense".
+
         Jika teks tidak terlihat seperti transaksi keuangan, kembalikan JSON dengan "type": "none".
 
-        Contoh:
+        Contoh Standar:
         - Teks: "Makan siang nasi padang 25000" -> {{"type": "expense", "amount": 25000, "description": "Makan siang nasi padang"}}
         - Teks: "dapat bonus akhir tahun 1.500.000" -> {{"type": "income", "amount": 1500000, "description": "Dapat bonus akhir tahun"}}
+
+        Contoh Penanganan Ambiguitas:
+        - Teks: "uang bulanan 1.600.000" -> {{"type": "expense", "amount": 1600000, "description": "Uang bulanan"}}
+        - Teks: "bayar uang bulanan 1.600.000" -> {{"type": "expense", "amount": 1600000, "description": "Bayar uang bulanan"}}
+        - Teks: "dapat uang bulanan dari ortu 500rb" -> {{"type": "income", "amount": 500000, "description": "Dapat uang bulanan dari ortu"}}
         - Teks: "halo apa kabar" -> {{"type": "none", "amount": 0, "description": "Bukan transaksi"}}
 
         Hanya kembalikan JSON, tanpa teks tambahan atau markdown.
