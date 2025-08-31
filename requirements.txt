@@ -9,3 +9,6 @@ google-generativeai
 
 # For loading .env files
 python-dotenv
+
+# For generating charts
+matplotlib
