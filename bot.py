@@ -76,7 +76,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         # Prompt untuk Gemini AI V2 - Router Intent
         prompt = f"""
-        Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "greeting", "request_reset", atau "unknown".
+        Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "query_balance", "greeting", "request_reset", atau "unknown".
         Kemudian, ekstrak informasi relevan berdasarkan intent tersebut.
 
         Teks Pengguna: "{user_text}"
@@ -92,13 +92,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             - `period` bisa berupa: "today", "yesterday", "this_month", "last_month".
             - `type` (opsional, default 'all'): jika pengguna menyebut "pemasukan" atau "pengeluaran".
 
-        3.  Jika intentnya `greeting` (sapaan), formatnya:
+        3.  Jika intentnya `query_balance` (cek total saldo), formatnya:
+            {{"intent": "query_balance"}}
+
+        4.  Jika intentnya `greeting` (sapaan), formatnya:
             {{"intent": "greeting"}}
 
-        4.  Jika intentnya `request_reset` (meminta hapus semua data), formatnya:
+        5.  Jika intentnya `request_reset` (meminta hapus semua data), formatnya:
             {{"intent": "request_reset"}}
 
-        5.  Jika tidak cocok sama sekali, formatnya:
+        6.  Jika tidak cocok sama sekali, formatnya:
             {{"intent": "unknown"}}
 
         --- CONTOH ---
@@ -108,6 +111,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         - Teks: "laporan bulan ini" -> {{"intent": "query_summary", "query": {{"period": "this_month", "type": "all"}}}}
         - Teks: "cek pengeluaran kemarin" -> {{"intent": "query_summary", "query": {{"period": "yesterday", "type": "expense"}}}}
         - Teks: "pemasukan bulan lalu apa aja?" -> {{"intent": "query_summary", "query": {{"period": "last_month", "type": "income"}}}}
+        - Teks: "saldo saya berapa?" -> {{"intent": "query_balance"}}
+        - Teks: "uangku sisa berapa" -> {{"intent": "query_balance"}}
         - Teks: "hapus semua dataku" -> {{"intent": "request_reset"}}
         - Teks: "reset dong" -> {{"intent": "request_reset"}}
         - Teks: "halo bot" -> {{"intent": "greeting"}}
@@ -131,6 +136,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await process_summary_query(update, context, data.get("query", {}))
         elif intent == "request_reset":
             await process_reset_request(update, context)
+        elif intent == "query_balance":
+            await process_balance_query(update, context)
         elif intent == "greeting":
             await process_greeting(update, context)
         else: # intent == "unknown" atau tidak ada intent
@@ -281,6 +288,17 @@ async def process_greeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Menangani sapaan dari pengguna."""
     await update.message.reply_text("Halo! Ada yang bisa saya bantu dengan pencatatan keuangan Anda?")
 
+async def process_balance_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mengambil dan mengirimkan total saldo pengguna saat ini."""
+    user_id = update.effective_user.id
+    try:
+        rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
+        current_balance = rpc_response.data if rpc_response.data is not None else 0
+        await update.message.reply_html(f"💰 <b>Saldo Anda saat ini adalah: Rp{current_balance:,.0f}</b>")
+    except Exception as e:
+        logger.error(f"Error fetching balance query: {e}")
+        await update.message.reply_text("Maaf, terjadi kesalahan saat mengambil saldo Anda.")
+
 async def process_reset_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mengirim pesan konfirmasi untuk mereset data."""
     keyboard = [
@@ -387,7 +405,7 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
         else:
             await processing_message.edit_text("Maaf, saya tidak bisa memahami koreksi Anda. Coba lagi atau batalkan dengan /cancel.")
-            return AWAITING_EDIT_INPUT
+            return AWAITING_EDIT_INPUT # Tetap di mode edit
 
     except Exception as e:
         logger.error(f"Error processing smart edit input: {e}")
