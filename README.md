@@ -11,12 +11,14 @@ Bot Telegram cerdas untuk mencatat dan mengelola arus kas (pemasukan dan pengelu
 -   **Kalkulasi Saldo Real-time**: Saldo Anda akan selalu diperbarui setelah setiap transaksi.
 -   **Reset Data**: Mulai dari awal dengan fitur reset data yang aman (memerlukan konfirmasi).
 -   **Multi-Pengguna**: Data setiap pengguna disimpan secara terpisah dan aman.
+-   **AI Failover**: Sistem cadangan yang andal. Jika AI utama (Gemini) gagal, bot akan otomatis beralih ke AI sekunder (Zhipu GLM) untuk memastikan layanan tetap berjalan.
 
 ## Teknologi yang Digunakan
 
 -   **Python**: Bahasa utama pengembangan bot.
 -   **python-telegram-bot**: Library untuk berinteraksi dengan Telegram Bot API.
--   **Google Gemini AI**: Untuk pemrosesan bahasa alami (NLP), deteksi intent, dan ekstraksi data.
+-   **AI Utama**: Google Gemini (`gemini-2.5-flash`) untuk pemrosesan bahasa alami, deteksi intent, dan ekstraksi data.
+-   **AI Cadangan**: Zhipu AI (`glm-4-flash`) sebagai sistem failover.
 -   **Supabase**: Sebagai database PostgreSQL cloud untuk menyimpan semua data transaksi.
 
 ## Penyiapan dan Instalasi
