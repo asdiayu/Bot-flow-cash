@@ -48,7 +48,7 @@ if not all([TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
 
 # Konfigurasi Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+gemini_model = genai.GenerativeModel('gemini-2.5-flash')
 
 # Konfigurasi Zhipu AI
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")
