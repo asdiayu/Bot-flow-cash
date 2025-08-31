@@ -1,19 +1,22 @@
-# Bot Pencatat Keuangan Pribadi
+# Bot Pencatat Keuangan Pribadi Cerdas
 
-Bot Telegram cerdas untuk mencatat arus kas (pemasukan dan pengeluaran) harian Anda menggunakan pemrosesan bahasa alami yang didukung oleh Google Gemini AI dan database Supabase.
+Bot Telegram cerdas untuk mencatat dan mengelola arus kas (pemasukan dan pengeluaran) harian Anda. Ditenagai oleh Google Gemini AI, bot ini memahami bahasa alami untuk interaksi yang lebih fleksibel dan intuitif.
 
 ## Fitur Utama
 
--   **Pencatatan Bahasa Alami**: Cukup kirim pesan seperti "Beli kopi susu 25 ribu" atau "Gajian 5 juta" dan biarkan AI yang memprosesnya.
--   **Ringkasan Harian**: Dapatkan rekapitulasi pemasukan dan pengeluaran untuk tanggal tertentu dengan perintah `/day DD-MM-YY`.
--   **Ringkasan Bulanan**: Dapatkan rekapitulasi untuk bulan tertentu dengan perintah `/month MM-YY`.
--   **Multi-Pengguna**: Data setiap pengguna disimpan secara terpisah dan aman berdasarkan ID unik Telegram.
+-   **Interaksi Berbasis AI**: Tidak perlu perintah kaku. Cukup bicara dengan bot seperti biasa, dan AI akan mengerti maksud Anda.
+-   **Pencatatan Transaksi Cerdas**: Catat pemasukan dan pengeluaran dengan kalimat sehari-hari (misal: "beli kopi 25rb").
+-   **Ringkasan Fleksibel**: Minta ringkasan dengan bahasa natural ("summary hari ini", "pengeluaran bulan lalu apa aja?").
+-   **Manajemen Transaksi**: Edit atau hapus transaksi yang salah input dengan mudah melalui tombol inline.
+-   **Kalkulasi Saldo Real-time**: Saldo Anda akan selalu diperbarui setelah setiap transaksi.
+-   **Reset Data**: Mulai dari awal dengan fitur reset data yang aman (memerlukan konfirmasi).
+-   **Multi-Pengguna**: Data setiap pengguna disimpan secara terpisah dan aman.
 
 ## Teknologi yang Digunakan
 
 -   **Python**: Bahasa utama pengembangan bot.
 -   **python-telegram-bot**: Library untuk berinteraksi dengan Telegram Bot API.
--   **Google Gemini AI**: Untuk pemrosesan bahasa alami (NLP) dan ekstraksi data dari teks.
+-   **Google Gemini AI**: Untuk pemrosesan bahasa alami (NLP), deteksi intent, dan ekstraksi data.
 -   **Supabase**: Sebagai database PostgreSQL cloud untuk menyimpan semua data transaksi.
 
 ## Penyiapan dan Instalasi
@@ -33,7 +36,6 @@ source venv/bin/activate  # Di Windows, gunakan `venv\Scripts\activate`
 ```
 
 **3. Install Dependensi**
-Pastikan semua library yang dibutuhkan terinstal.
 ```bash
 pip install -r requirements.txt
 ```
@@ -41,15 +43,12 @@ pip install -r requirements.txt
 **4. Siapkan Database Supabase**
 -   Buat proyek baru di [Supabase](https://supabase.com).
 -   Di dalam proyek Anda, navigasikan ke **SQL Editor**.
--   Salin seluruh konten dari file `database/schema.sql` dan jalankan di editor untuk membuat tabel `transactions`.
+-   **Langkah A**: Salin seluruh konten dari file `database/schema.sql` dan jalankan untuk membuat tabel `transactions`.
+-   **Langkah B**: Salin seluruh konten dari file `database/calculate_balance_rpc.sql` dan jalankan untuk membuat fungsi kalkulasi saldo yang efisien.
 
 **5. Konfigurasi Environment Variables**
 -   Salin file `.env.example` menjadi file baru bernama `.env`.
--   Isi semua variabel di dalam file `.env` dengan kredensial Anda:
-    -   `TELEGRAM_BOT_TOKEN`: Token bot dari BotFather di Telegram.
-    -   `GEMINI_API_KEY`: Kunci API Anda dari Google AI Studio.
-    -   `SUPABASE_URL`: URL proyek Supabase Anda (ada di Project Settings > API).
-    -   `SUPABASE_KEY`: Kunci `anon` `public` proyek Supabase Anda (ada di Project Settings > API).
+-   Isi semua variabel di dalam file `.env` dengan kredensial Anda.
 
 **6. Jalankan Bot**
 ```bash
@@ -60,11 +59,18 @@ Bot Anda sekarang sudah aktif dan siap menerima pesan!
 ## Cara Penggunaan
 
 -   **Mencatat Transaksi**:
-    -   Kirim pesan: `Makan siang 20000`
-    -   Kirim pesan: `Dapat bonus 500rb`
+    -   `bayar parkir 2000`
+    -   `dapat gaji bulanan 5jt`
 
--   **Melihat Ringkasan Harian**:
-    -   Kirim perintah: `/day 31-08-25`
+-   **Meminta Ringkasan**:
+    -   `summary hari ini`
+    -   `laporan bulan lalu`
+    -   `cek pengeluaran kemarin`
 
--   **Melihat Ringkasan Bulanan**:
-    -   Kirim perintah: `/month 08-25`
+-   **Mengelola Transaksi**:
+    -   Setelah transaksi dicatat, akan muncul tombol **[✏️ Edit]** dan **[❌ Hapus]** di bawah pesan.
+    -   Tekan tombol tersebut untuk mengelola transaksi yang bersangkutan.
+
+-   **Mereset Data**:
+    -   Kirim pesan: `reset semua dataku` atau `mulai dari awal lagi`.
+    -   Bot akan meminta konfirmasi sebelum melakukan tindakan.
