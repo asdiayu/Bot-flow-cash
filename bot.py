@@ -9,7 +9,15 @@ import google.generativeai as genai
 from supabase import create_client, Client
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    CallbackQueryHandler,
+    ConversationHandler,
+)
 
 # Muat environment variables dari file .env
 load_dotenv()
@@ -20,6 +28,10 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Definisi State untuk ConversationHandler
+AWAITING_EDIT_INPUT = 1
+
 
 # --- Inisialisasi Klien Eksternal ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -128,7 +140,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 # Buat Tombol Inline
                 transaction_id = db_response.data[0]['id']
                 keyboard = [
-                    [InlineKeyboardButton("Hapus Transaksi Ini", callback_data=f"delete:{transaction_id}")]
+                    [
+                        InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{transaction_id}"),
+                        InlineKeyboardButton("❌ Hapus", callback_data=f"delete:{transaction_id}")
+                    ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -163,6 +178,107 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- Fungsi Handler Lanjutan ---
 
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Membatalkan sesi edit yang sedang berlangsung."""
+    context.user_data.pop('edit_transaction_id', None)
+    context.user_data.pop('original_message_id', None)
+    await update.message.reply_text("Sesi edit dibatalkan.")
+    return ConversationHandler.END
+
+async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Menangani pesan dari user saat dalam mode edit."""
+    user_text = update.message.text
+    user_id = update.effective_user.id
+
+    edit_transaction_id = context.user_data.get('edit_transaction_id')
+    if not edit_transaction_id:
+        await update.message.reply_text("Error: Tidak ada sesi edit yang aktif. Silakan mulai lagi.")
+        return ConversationHandler.END
+
+    # Kirim pesan bahwa bot sedang bekerja
+    processing_message = await update.message.reply_text("🧠 Menganalisis editan Anda...")
+
+    try:
+        # Gunakan prompt yang sama dengan handle_message untuk konsistensi
+        prompt = f"""
+        Anda adalah API pemrosesan bahasa alami untuk bot pencatat keuangan.
+        Tugas Anda adalah mengubah teks mentah dari pengguna menjadi format JSON yang terstruktur.
+
+        Teks pengguna: "{user_text}"
+
+        Format JSON yang harus Anda hasilkan harus memiliki kunci berikut:
+        - "type": bisa "income" (pemasukan) atau "expense" (pengeluaran).
+        - "amount": angka (integer atau float) dari jumlah transaksi.
+        - "description": deskripsi singkat dari transaksi.
+
+        ATURAN PENTING:
+        1.  Prioritaskan "expense" jika ada kata kunci seperti: 'bayar', 'beli', 'biaya', 'untuk', 'kasih', 'keluar', 'jajan'.
+        2.  Prioritaskan "income" jika ada kata kunci seperti: 'dapat', 'terima', 'gaji', 'bonus', 'dari', 'masuk'.
+        3.  Untuk kasus ambigu seperti "uang bulanan", jika tidak ada kata kunci lain, anggap itu sebagai "expense".
+
+        Jika teks tidak terlihat seperti transaksi keuangan, kembalikan JSON dengan "type": "none".
+        """
+        response = genai.GenerativeModel('gemini-1.5-flash-latest').generate_content(prompt)
+        cleaned_response_text = response.text.strip().replace('```json', '').replace('```', '')
+        data = json.loads(cleaned_response_text)
+
+        transaction_type = data.get("type")
+        amount = data.get("amount")
+        description = data.get("description")
+
+        if transaction_type in ["income", "expense"] and isinstance(amount, (int, float)) and amount > 0:
+            payload = {"type": transaction_type, "amount": amount, "description": description}
+            # Lakukan UPDATE, bukan INSERT
+            db_response = supabase.table("transactions").update(payload).eq("id", edit_transaction_id).eq("user_id", user_id).execute()
+
+            # Ambil ID pesan asli untuk diedit
+            original_message_id = context.user_data.get('original_message_id')
+            await processing_message.delete() # Hapus pesan "menganalisis..."
+
+            # Hitung ulang saldo
+            rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
+            current_balance = rpc_response.data if rpc_response.data is not None else 0
+
+            # Buat keyboard lagi
+            keyboard = [[
+                InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{edit_transaction_id}"),
+                InlineKeyboardButton("❌ Hapus", callback_data=f"delete:{edit_transaction_id}")
+            ]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Buat teks konfirmasi baru
+            confirmation_text = (
+                f"✅ **Transaksi Diperbarui!**\n\n"
+                f"Jenis: {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
+                f"Jumlah: Rp{amount:,.0f}\n"
+                f"Deskripsi: {description}\n\n"
+                f"💰 **Saldo Anda saat ini: Rp{current_balance:,.0f}**"
+            )
+
+            # Edit pesan asli
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=original_message_id,
+                text=confirmation_text,
+                parse_mode='HTML',
+                reply_markup=reply_markup
+            )
+
+            # Bersihkan state dan akhiri conversation
+            context.user_data.pop('edit_transaction_id', None)
+            context.user_data.pop('original_message_id', None)
+            return ConversationHandler.END
+        else:
+            await processing_message.edit_text("Hmm, sepertinya itu bukan transaksi keuangan. Silakan coba lagi atau batalkan dengan /cancel.")
+            return AWAITING_EDIT_INPUT # Tetap di mode edit
+
+    except Exception as e:
+        logger.error(f"Error processing edit input: {e}")
+        await processing_message.edit_text("Maaf, terjadi kesalahan saat memproses editan Anda.")
+        context.user_data.pop('edit_transaction_id', None)
+        context.user_data.pop('original_message_id', None)
+        return ConversationHandler.END
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Menangani semua aksi dari tombol inline."""
     query = update.callback_query
@@ -178,7 +294,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     user_id = query.from_user.id
 
-    if action == "delete":
+    if action == "edit":
+        # Simpan ID transaksi yang akan diedit di user_data
+        context.user_data['edit_transaction_id'] = transaction_id
+        # Simpan juga ID pesan asli agar bisa kita edit nanti
+        context.user_data['original_message_id'] = query.message.message_id
+
+        await query.message.reply_text("Silakan kirim detail transaksi yang baru...")
+        return AWAITING_EDIT_INPUT
+
+    elif action == "delete":
         try:
             # Hapus transaksi, pastikan user_id cocok untuk keamanan
             delete_response = supabase.table("transactions").delete().match({'id': transaction_id, 'user_id': user_id}).execute()
@@ -291,12 +416,26 @@ def main() -> None:
     # Buat aplikasi bot
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Buat ConversationHandler untuk mengelola state
+    conv_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
+        states={
+            AWAITING_EDIT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_input)],
+        },
+        fallbacks=[
+            CommandHandler("start", start),
+            CommandHandler("day", summary_day),
+            CommandHandler("month", summary_month),
+            CommandHandler("cancel", cancel),
+        ],
+    )
+
     # Daftarkan handler
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("day", summary_day))
-    application.add_handler(CommandHandler("month", summary_month))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(button_handler))
+    # Tambahkan handler lain yang tidak termasuk dalam conversation di sini jika ada
+    # application.add_handler(CommandHandler("start", start)) # Contoh jika start di luar conversation
+
 
     # Mulai bot (polling)
     logger.info("Bot dimulai...")
