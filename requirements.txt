@@ -14,4 +14,4 @@ python-dotenv
 matplotlib
 
 # For Zhipu AI (GLM) Failover
-zhipuai
+zhipuai>=2.1.0
