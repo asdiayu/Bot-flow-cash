@@ -418,9 +418,14 @@ def main() -> None:
 
     # Buat ConversationHandler untuk mengelola state
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)],
+        entry_points=[
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
+            CallbackQueryHandler(button_handler) # Tombol sekarang bagian dari percakapan
+        ],
         states={
-            AWAITING_EDIT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_input)],
+            AWAITING_EDIT_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_input)
+            ],
         },
         fallbacks=[
             CommandHandler("start", start),
@@ -430,11 +435,8 @@ def main() -> None:
         ],
     )
 
-    # Daftarkan handler
+    # Daftarkan handler utama (ConversationHandler)
     application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(button_handler))
-    # Tambahkan handler lain yang tidak termasuk dalam conversation di sini jika ada
-    # application.add_handler(CommandHandler("start", start)) # Contoh jika start di luar conversation
 
 
     # Mulai bot (polling)
