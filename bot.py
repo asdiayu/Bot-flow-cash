@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Definisi State untuk ConversationHandler
-ROUTING, AWAITING_EDIT_INPUT = range(2)
+AWAITING_EDIT_INPUT = 1
 
 
 # --- Inisialisasi Klien Eksternal ---
@@ -52,8 +52,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Fungsi Handler Telegram ---
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Memulai percakapan dan mengirim pesan sambutan."""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Mengirim pesan sambutan."""
     user = update.effective_user
     welcome_message = (
         f"Halo, {user.first_name}! 👋\n\n"
@@ -67,10 +67,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "- `saldo saya berapa?`"
     )
     await update.message.reply_text(welcome_message)
-    return ROUTING
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Fungsi utama yang menangani semua pesan teks dan bertindak sebagai router."""
     user_text = update.message.text
 
@@ -154,8 +153,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"An unexpected error occurred in handle_message: {e}")
         await processing_message.edit_text("Maaf, terjadi kesalahan yang tidak terduga.")
 
-    # Kembali ke state routing untuk menunggu pesan berikutnya
-    return ROUTING
+    # Tidak ada return value karena ini adalah top-level handler
+    return
 
 
 # --- Fungsi Logika Bisnis ---
@@ -324,7 +323,7 @@ async def process_reset_request(update: Update, context: ContextTypes.DEFAULT_TY
 # --- Fungsi Handler Lanjutan ---
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Membatalkan sesi edit yang sedang berlangsung dan kembali ke state utama."""
+    """Membatalkan sesi edit yang sedang berlangsung."""
     if 'edit_transaction_id' in context.user_data:
         context.user_data.pop('edit_transaction_id', None)
         context.user_data.pop('original_trx', None)
@@ -333,7 +332,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     else:
         await update.message.reply_text("Tidak ada aksi yang sedang berlangsung untuk dibatalkan.")
 
-    return ROUTING
+    return ConversationHandler.END
 
 async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Menangani input koreksi dari pengguna dengan konteks transaksi lama."""
@@ -420,11 +419,11 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logger.error(f"Error processing smart edit input: {e}")
         await processing_message.edit_text("Maaf, terjadi kesalahan saat memproses editan Anda.")
 
-    # Bersihkan state setelah selesai
+    # Bersihkan state dan akhiri conversation
     context.user_data.pop('edit_transaction_id', None)
     context.user_data.pop('original_trx', None)
     context.user_data.pop('original_message_id', None)
-    return ROUTING
+    return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Menangani semua aksi dari tombol inline secara lebih andal."""
@@ -493,7 +492,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception as e:
                 logger.error(f"Error deleting transaction: {e}")
                 await query.edit_message_text(text="Maaf, terjadi kesalahan saat mencoba menghapus transaksi.")
-            return ROUTING
 
     elif action == "confirm_reset":
         if value == "yes":
@@ -505,7 +503,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 await query.edit_message_text(text="Maaf, terjadi kesalahan teknis saat mereset data.")
         else:  # value == "no"
             await query.edit_message_text(text="Aksi dibatalkan. Data Anda aman.")
-        return ROUTING
 
 
 
@@ -516,27 +513,25 @@ def main() -> None:
     # Buat aplikasi bot
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Rombak total ConversationHandler untuk alur yang lebih stabil
+    # ConversationHandler untuk alur Edit
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CallbackQueryHandler(button_handler, pattern="^edit:.*")],
         states={
-            ROUTING: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message),
-                CallbackQueryHandler(button_handler),
-            ],
             AWAITING_EDIT_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_input),
-                CallbackQueryHandler(button_handler), # Izinkan tombol (misal: hapus) bahkan saat mode edit
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_input)
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_user=True,
-        per_message=False,
-        allow_reentry=True,
+        # Izinkan pengguna untuk memulai ulang conversation kapan saja
+        allow_reentry=True
     )
 
-    # Daftarkan hanya ConversationHandler sebagai handler utama
-    application.add_handler(conv_handler)
+    # Daftarkan handler
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(conv_handler) # Handler untuk alur edit
+    application.add_handler(CallbackQueryHandler(button_handler)) # Handler untuk tombol lain (delete, reset)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)) # Handler utama untuk teks
 
     # Mulai bot (polling)
     logger.info("Bot dimulai...")
