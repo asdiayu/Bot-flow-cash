@@ -66,7 +66,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_html(welcome_message)
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Fungsi utama yang menangani semua pesan teks dan bertindak sebagai router."""
     user_text = update.message.text
 
@@ -76,7 +76,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         # Prompt untuk Gemini AI V2 - Router Intent
         prompt = f"""
-        Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "greeting", atau "unknown".
+        Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "greeting", "request_reset", atau "unknown".
         Kemudian, ekstrak informasi relevan berdasarkan intent tersebut.
 
         Teks Pengguna: "{user_text}"
@@ -142,6 +142,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.error(f"An unexpected error occurred in handle_message: {e}")
         await processing_message.edit_text("Maaf, terjadi kesalahan yang tidak terduga.")
+
+    # Akhiri percakapan untuk interaksi satu kali
+    return ConversationHandler.END
 
 
 # --- Fungsi Logika Bisnis ---
@@ -306,96 +309,94 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Menangani pesan dari user saat dalam mode edit."""
-    user_text = update.message.text
+    """Menangani input koreksi dari pengguna dengan konteks transaksi lama."""
     user_id = update.effective_user.id
+    correction_text = update.message.text
 
     edit_transaction_id = context.user_data.get('edit_transaction_id')
-    if not edit_transaction_id:
-        await update.message.reply_text("Error: Tidak ada sesi edit yang aktif. Silakan mulai lagi.")
+    original_trx = context.user_data.get('original_trx')
+    original_message_id = context.user_data.get('original_message_id')
+
+    if not all([edit_transaction_id, original_trx, original_message_id]):
+        await update.message.reply_text("Error: Sesi edit tidak valid atau telah berakhir. Silakan mulai lagi.")
         return ConversationHandler.END
 
-    # Kirim pesan bahwa bot sedang bekerja
-    processing_message = await update.message.reply_text("🧠 Menganalisis editan Anda...")
+    processing_message = await update.message.reply_text("🧠 Menerapkan koreksi Anda...")
 
     try:
-        # Gunakan prompt yang sama dengan handle_message untuk konsistensi
-        prompt = f"""
-        Anda adalah API pemrosesan bahasa alami untuk bot pencatat keuangan.
-        Tugas Anda adalah mengubah teks mentah dari pengguna menjadi format JSON yang terstruktur.
+        # Prompt AI khusus untuk menginterpretasikan koreksi
+        edit_prompt = f"""
+        Anda adalah asisten editor transaksi keuangan. Tugas Anda adalah memodifikasi transaksi lama berdasarkan teks koreksi dari pengguna.
 
-        Teks pengguna: "{user_text}"
+        Transaksi Asli:
+        - Deskripsi: "{original_trx['description']}"
+        - Jumlah: {original_trx['amount']}
 
-        Format JSON yang harus Anda hasilkan harus memiliki kunci berikut:
-        - "type": bisa "income" (pemasukan) atau "expense" (pengeluaran).
-        - "amount": angka (integer atau float) dari jumlah transaksi.
-        - "description": deskripsi singkat dari transaksi.
+        Teks Koreksi Pengguna: "{correction_text}"
 
-        ATURAN PENTING:
-        1.  Prioritaskan "expense" jika ada kata kunci seperti: 'bayar', 'beli', 'biaya', 'untuk', 'kasih', 'keluar', 'jajan'.
-        2.  Prioritaskan "income" jika ada kata kunci seperti: 'dapat', 'terima', 'gaji', 'bonus', 'dari', 'masuk'.
-        3.  Untuk kasus ambigu seperti "uang bulanan", jika tidak ada kata kunci lain, anggap itu sebagai "expense".
+        Tugas Anda:
+        1. Analisis teks koreksi. Apakah pengguna ingin mengubah deskripsi, jumlah, atau keduanya?
+        2. Jika pengguna hanya memberi nominal baru (misal: "salah, harusnya 15000" atau "15rb"), GANTI HANYA JUMLAHNYA dan pertahankan deskripsi asli.
+        3. Jika pengguna hanya memberi deskripsi baru (misal: "deskripsinya jadi beli makan malam"), GANTI HANYA DESKRIPSINYA dan pertahankan jumlah asli.
+        4. Jika pengguna memberikan kalimat transaksi lengkap baru, gunakan itu.
+        5. Kembalikan hasilnya dalam format JSON dengan kunci "description" dan "amount".
 
-        Jika teks tidak terlihat seperti transaksi keuangan, kembalikan JSON dengan "type": "none".
+        Contoh:
+        - Koreksi: "ganti jadi 20rb" -> {{"description": "{original_trx['description']}", "amount": 20000}}
+        - Koreksi: "ternyata buat bayar parkir" -> {{"description": "bayar parkir", "amount": {original_trx['amount']}}}
+        - Koreksi: "oh salah, harusnya makan malam 75000" -> {{"description": "makan malam", "amount": 75000}}
+
+        Hanya kembalikan JSON yang valid.
         """
-        response = genai.GenerativeModel('gemini-1.5-flash-latest').generate_content(prompt)
+        response = gemini_model.generate_content(edit_prompt)
         cleaned_response_text = response.text.strip().replace('```json', '').replace('```', '')
         data = json.loads(cleaned_response_text)
 
-        transaction_type = data.get("type")
-        amount = data.get("amount")
-        description = data.get("description")
+        new_amount = data.get("amount")
+        new_description = data.get("description")
 
-        if transaction_type in ["income", "expense"] and isinstance(amount, (int, float)) and amount > 0:
-            payload = {"type": transaction_type, "amount": amount, "description": description}
-            # Lakukan UPDATE, bukan INSERT
+        if isinstance(new_amount, (int, float)) and new_description:
+            # Dapatkan tipe transaksi lama, karena tipe tidak bisa diubah
+            original_type_response = supabase.table("transactions").select("type").eq("id", edit_transaction_id).single().execute()
+            transaction_type = original_type_response.data['type']
+
+            payload = {"amount": new_amount, "description": new_description}
             db_response = supabase.table("transactions").update(payload).eq("id", edit_transaction_id).eq("user_id", user_id).execute()
 
-            # Ambil ID pesan asli untuk diedit
-            original_message_id = context.user_data.get('original_message_id')
-            await processing_message.delete() # Hapus pesan "menganalisis..."
+            await processing_message.delete()
 
-            # Hitung ulang saldo
             rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
             current_balance = rpc_response.data if rpc_response.data is not None else 0
 
-            # Buat keyboard lagi
             keyboard = [[
                 InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{edit_transaction_id}"),
                 InlineKeyboardButton("❌ Hapus", callback_data=f"delete:{edit_transaction_id}")
             ]]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            # Buat teks konfirmasi baru
             confirmation_text = (
                 f"✅ <b>Transaksi Diperbarui!</b>\n\n"
                 f"<b>Jenis:</b> {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
-                f"<b>Jumlah:</b> Rp{amount:,.0f}\n"
-                f"<b>Deskripsi:</b> {description}\n\n"
+                f"<b>Jumlah:</b> Rp{new_amount:,.0f}\n"
+                f"<b>Deskripsi:</b> {new_description}\n\n"
                 f"💰 <b>Saldo Anda saat ini: Rp{current_balance:,.0f}</b>"
             )
-
-            # Edit pesan asli
             await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=original_message_id,
-                text=confirmation_text,
-                parse_mode='HTML',
-                reply_markup=reply_markup
+                chat_id=update.effective_chat.id, message_id=original_message_id,
+                text=confirmation_text, parse_mode='HTML', reply_markup=reply_markup
             )
-
-            # Bersihkan state dan akhiri conversation
-            context.user_data.pop('edit_transaction_id', None)
-            context.user_data.pop('original_message_id', None)
-            return ConversationHandler.END
         else:
-            await processing_message.edit_text("Hmm, sepertinya itu bukan transaksi keuangan. Silakan coba lagi atau batalkan dengan /cancel.")
-            return AWAITING_EDIT_INPUT # Tetap di mode edit
+            await processing_message.edit_text("Maaf, saya tidak bisa memahami koreksi Anda. Coba lagi atau batalkan dengan /cancel.")
+            return AWAITING_EDIT_INPUT
 
     except Exception as e:
-        logger.error(f"Error processing edit input: {e}")
+        logger.error(f"Error processing smart edit input: {e}")
         await processing_message.edit_text("Maaf, terjadi kesalahan saat memproses editan Anda.")
+
+    finally:
+        # Bersihkan state dan akhiri conversation
         context.user_data.pop('edit_transaction_id', None)
+        context.user_data.pop('original_trx', None)
         context.user_data.pop('original_message_id', None)
         return ConversationHandler.END
 
@@ -421,10 +422,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
 
         if action == "edit":
-            context.user_data['edit_transaction_id'] = transaction_id
-            context.user_data['original_message_id'] = query.message.message_id
-            await query.message.reply_text("Silakan kirim detail transaksi yang baru...")
-            return AWAITING_EDIT_INPUT
+            # Ambil data transaksi lama untuk diberikan sebagai konteks ke AI
+            try:
+                original_trx_response = supabase.table("transactions").select("description, amount").eq("id", transaction_id).eq("user_id", user_id).single().execute()
+                if not original_trx_response.data:
+                    await query.edit_message_text("Error: Transaksi asli tidak ditemukan.")
+                    return
+
+                context.user_data['edit_transaction_id'] = transaction_id
+                context.user_data['original_message_id'] = query.message.message_id
+                context.user_data['original_trx'] = original_trx_response.data
+
+                await query.message.reply_text(
+                    "<b>Mode Edit Aktif.</b>\n"
+                    "Kirimkan koreksi Anda (misal: 'salah, harusnya 15rb' atau 'deskripsinya jadi beli makan malam').\n"
+                    "Ketik /cancel untuk membatalkan.",
+                    parse_mode='HTML'
+                )
+                return AWAITING_EDIT_INPUT
+            except Exception as e:
+                logger.error(f"Error fetching transaction for edit: {e}")
+                await query.edit_message_text("Maaf, terjadi kesalahan saat mencoba mengedit.")
+                return
 
         elif action == "delete":
             try:
