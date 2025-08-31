@@ -67,71 +67,93 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Menangani pesan teks dari user, menganalisisnya dengan Gemini, dan menyimpannya ke Supabase."""
+    """Fungsi utama yang menangani semua pesan teks dan bertindak sebagai router."""
     user_text = update.message.text
-    user_id = update.effective_user.id
 
     # Kirim pesan bahwa bot sedang bekerja
-    processing_message = await update.message.reply_text("🧠 Menganalisis transaksimu...")
+    processing_message = await update.message.reply_text("🧠 Berpikir...")
 
     try:
-        # Prompt untuk Gemini AI
+        # Prompt untuk Gemini AI V2 - Router Intent
         prompt = f"""
-        Anda adalah API pemrosesan bahasa alami untuk bot pencatat keuangan.
-        Tugas Anda adalah mengubah teks mentah dari pengguna menjadi format JSON yang terstruktur.
+        Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "greeting", atau "unknown".
+        Kemudian, ekstrak informasi relevan berdasarkan intent tersebut.
 
-        Teks pengguna: "{user_text}"
+        Teks Pengguna: "{user_text}"
+        Tanggal Hari Ini: {datetime.date.today().strftime('%Y-%m-%d')}
 
-        Format JSON yang harus Anda hasilkan harus memiliki kunci berikut:
-        - "type": bisa "income" (pemasukan) atau "expense" (pengeluaran).
-        - "amount": angka (integer atau float) dari jumlah transaksi.
-        - "description": deskripsi singkat dari transaksi.
+        --- FORMAT JSON OUTPUT ---
+        1.  Jika intentnya `log_transaction`, formatnya:
+            {{"intent": "log_transaction", "transaction": {{"type": "income" | "expense", "amount": <float>, "description": "<string>"}}}}
+            - Aturan: Gunakan kata kunci 'beli', 'bayar', 'biaya' untuk 'expense'. Gunakan 'dapat', 'gaji', 'terima' untuk 'income'.
 
-        ATURAN PENTING:
-        1.  Prioritaskan "expense" jika ada kata kunci seperti: 'bayar', 'beli', 'biaya', 'untuk', 'kasih', 'keluar', 'jajan'.
-        2.  Prioritaskan "income" jika ada kata kunci seperti: 'dapat', 'terima', 'gaji', 'bonus', 'dari', 'masuk'.
-        3.  Untuk kasus ambigu seperti "uang bulanan", jika tidak ada kata kunci lain, anggap itu sebagai "expense".
+        2.  Jika intentnya `query_summary`, formatnya:
+            {{"intent": "query_summary", "query": {{"period": "<string>", "type": "all" | "income" | "expense"}}}}
+            - `period` bisa berupa: "today", "yesterday", "this_month", "last_month".
+            - `type` (opsional, default 'all'): jika pengguna menyebut "pemasukan" atau "pengeluaran".
 
-        Jika teks tidak terlihat seperti transaksi keuangan, kembalikan JSON dengan "type": "none".
+        3.  Jika intentnya `greeting` (sapaan), formatnya:
+            {{"intent": "greeting"}}
 
-        Contoh Standar:
-        - Teks: "Makan siang nasi padang 25000" -> {{"type": "expense", "amount": 25000, "description": "Makan siang nasi padang"}}
-        - Teks: "dapat bonus akhir tahun 1.500.000" -> {{"type": "income", "amount": 1500000, "description": "Dapat bonus akhir tahun"}}
+        4.  Jika tidak cocok sama sekali, formatnya:
+            {{"intent": "unknown"}}
 
-        Contoh Penanganan Ambiguitas:
-        - Teks: "uang bulanan 1.600.000" -> {{"type": "expense", "amount": 1600000, "description": "Uang bulanan"}}
-        - Teks: "bayar uang bulanan 1.600.000" -> {{"type": "expense", "amount": 1600000, "description": "Bayar uang bulanan"}}
-        - Teks: "dapat uang bulanan dari ortu 500rb" -> {{"type": "income", "amount": 500000, "description": "Dapat uang bulanan dari ortu"}}
-        - Teks: "halo apa kabar" -> {{"type": "none", "amount": 0, "description": "Bukan transaksi"}}
+        --- CONTOH ---
+        - Teks: "beli kopi 25000" -> {{"intent": "log_transaction", "transaction": {{"type": "expense", "amount": 25000, "description": "beli kopi"}}}}
+        - Teks: "dapat gaji 5jt" -> {{"intent": "log_transaction", "transaction": {{"type": "income", "amount": 5000000, "description": "dapat gaji"}}}}
+        - Teks: "summary hari ini" -> {{"intent": "query_summary", "query": {{"period": "today", "type": "all"}}}}
+        - Teks: "laporan bulan ini" -> {{"intent": "query_summary", "query": {{"period": "this_month", "type": "all"}}}}
+        - Teks: "cek pengeluaran kemarin" -> {{"intent": "query_summary", "query": {{"period": "yesterday", "type": "expense"}}}}
+        - Teks: "pemasukan bulan lalu apa aja?" -> {{"intent": "query_summary", "query": {{"period": "last_month", "type": "income"}}}}
+        - Teks: "halo bot" -> {{"intent": "greeting"}}
+        - Teks: "cuaca hari ini gimana" -> {{"intent": "unknown"}}
 
-        Hanya kembalikan JSON, tanpa teks tambahan atau markdown.
+        Hanya kembalikan JSON yang valid.
         """
-
-        # Panggil Gemini AI
         response = gemini_model.generate_content(prompt)
-
-        # Bersihkan respons dari markdown
         cleaned_response_text = response.text.strip().replace('```json', '').replace('```', '')
-
-        # Parse JSON
         data = json.loads(cleaned_response_text)
 
-        transaction_type = data.get("type")
-        amount = data.get("amount")
-        description = data.get("description")
+        intent = data.get("intent")
 
-        # Validasi data dari Gemini
-        if transaction_type in ["income", "expense"] and isinstance(amount, (int, float)) and amount > 0:
+        # Hapus pesan "Berpikir..."
+        await processing_message.delete()
+
+        # Router berdasarkan intent
+        if intent == "log_transaction":
+            await process_new_transaction(update, context, data.get("transaction", {}))
+        elif intent == "query_summary":
+            await process_summary_query(update, context, data.get("query", {}))
+        elif intent == "greeting":
+            await process_greeting(update, context)
+        else: # intent == "unknown" atau tidak ada intent
+            await update.message.reply_text("Maaf, saya tidak mengerti maksud Anda. Coba katakan dengan cara lain.")
+
+    except json.JSONDecodeError:
+        logger.error(f"Failed to parse JSON from Gemini response: {response.text}")
+        await processing_message.edit_text("Maaf, saya kesulitan memahami respons dari AI. Coba sederhanakan kalimat Anda.")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in handle_message: {e}")
+        await processing_message.edit_text("Maaf, terjadi kesalahan yang tidak terduga.")
+
+
+# --- Fungsi Logika Bisnis ---
+
+async def process_new_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE, transaction_data: dict):
+    """Menyimpan transaksi baru ke database dan mengirim konfirmasi."""
+    user_id = update.effective_user.id
+
+    transaction_type = transaction_data.get("type")
+    amount = transaction_data.get("amount")
+    description = transaction_data.get("description")
+
+    # Validasi data dari Gemini
+    if transaction_type in ["income", "expense"] and isinstance(amount, (int, float)) and amount > 0 and description:
+        try:
             # Simpan ke Supabase
-            payload = {
-                "user_id": user_id,
-                "type": transaction_type,
-                "amount": amount,
-                "description": description
-            }
+            payload = { "user_id": user_id, "type": transaction_type, "amount": amount, "description": description }
             db_response = supabase.table("transactions").insert(payload).execute()
 
-            # Cek jika ada error saat menyimpan
             if db_response.data:
                 # Panggil RPC untuk mendapatkan saldo terbaru
                 rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
@@ -139,12 +161,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
                 # Buat Tombol Inline
                 transaction_id = db_response.data[0]['id']
-                keyboard = [
-                    [
-                        InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{transaction_id}"),
-                        InlineKeyboardButton("❌ Hapus", callback_data=f"delete:{transaction_id}")
-                    ]
-                ]
+                keyboard = [[
+                    InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{transaction_id}"),
+                    InlineKeyboardButton("❌ Hapus", callback_data=f"delete:{transaction_id}")
+                ]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                 # Kirim konfirmasi ke user
@@ -155,25 +175,85 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"Deskripsi: {description}\n\n"
                     f"💰 **Saldo Anda saat ini: Rp{current_balance:,.0f}**"
                 )
-                await processing_message.edit_text(
-                    confirmation_text,
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
+                await update.message.reply_html(confirmation_text, reply_markup=reply_markup)
             else:
                 logger.error(f"Error saving to Supabase: {db_response.error}")
-                await processing_message.edit_text("Maaf, terjadi kesalahan saat menyimpan data. Silakan coba lagi.")
+                await update.message.reply_text("Maaf, terjadi kesalahan saat menyimpan data.")
+        except Exception as e:
+            logger.error(f"Error in process_new_transaction: {e}")
+            await update.message.reply_text("Maaf, terjadi kesalahan internal saat memproses transaksi Anda.")
+    else:
+        # Jika data dari AI tidak lengkap/valid
+        await update.message.reply_text("Maaf, saya tidak bisa mendapatkan detail yang lengkap dari pesan Anda. Mohon coba lagi.")
 
-        else:
-            # Jika Gemini mengindikasikan ini bukan transaksi
-            await processing_message.edit_text("Hmm, sepertinya itu bukan transaksi keuangan. Coba lagi dengan format seperti 'Makan siang 20000'.")
+async def process_summary_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query_data: dict):
+    """Membuat query summary ke database dan mengirim hasilnya."""
+    user_id = update.effective_user.id
+    period = query_data.get("period", "today")
+    query_type = query_data.get("type", "all")
 
-    except json.JSONDecodeError:
-        logger.error(f"Failed to parse JSON from Gemini response: {response.text}")
-        await processing_message.edit_text("Maaf, saya kesulitan memahami respons dari AI. Coba sederhanakan kalimat Anda.")
+    # Tentukan rentang tanggal berdasarkan periode
+    today = datetime.date.today()
+    start_date, end_date = None, None
+
+    if period == "today":
+        start_date = datetime.datetime.combine(today, datetime.time.min)
+        end_date = start_date + datetime.timedelta(days=1)
+        period_str = "hari ini"
+    elif period == "yesterday":
+        yesterday = today - datetime.timedelta(days=1)
+        start_date = datetime.datetime.combine(yesterday, datetime.time.min)
+        end_date = start_date + datetime.timedelta(days=1)
+        period_str = "kemarin"
+    elif period == "this_month":
+        start_date = today.replace(day=1)
+        next_month = start_date.replace(day=28) + datetime.timedelta(days=4)
+        end_date = next_month.replace(day=1)
+        period_str = f"bulan {start_date.strftime('%B %Y')}"
+    elif period == "last_month":
+        first_day_of_current_month = today.replace(day=1)
+        end_date = first_day_of_current_month
+        start_date = (end_date - datetime.timedelta(days=1)).replace(day=1)
+        period_str = f"bulan {start_date.strftime('%B %Y')}"
+    else:
+        await update.message.reply_text("Maaf, saya tidak mengerti periode waktu yang Anda maksud.")
+        return
+
+    try:
+        query = supabase.table("transactions").select("type, amount").eq("user_id", user_id).gte("created_at", start_date.isoformat()).lt("created_at", end_date.isoformat())
+
+        if query_type != "all":
+            query = query.eq("type", query_type)
+
+        response = query.execute()
+
+        total_income = 0
+        total_expense = 0
+        if response.data:
+            for trx in response.data:
+                if trx['type'] == 'income':
+                    total_income += trx['amount']
+                else:
+                    total_expense += trx['amount']
+
+        # Buat pesan summary
+        title = f"📊 **Ringkasan untuk {period_str}**\n\n"
+        summary_parts = []
+        if query_type == "all" or query_type == "income":
+            summary_parts.append(f"Pemasukan: Rp{total_income:,.0f}")
+        if query_type == "all" or query_type == "expense":
+            summary_parts.append(f"Pengeluaran: Rp{total_expense:,.0f}")
+
+        summary_message = title + "\n".join(summary_parts)
+        await update.message.reply_html(summary_message)
+
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        await processing_message.edit_text("Maaf, terjadi kesalahan yang tidak terduga. Tim kami sudah diberitahu.")
+        logger.error(f"Error fetching summary query: {e}")
+        await update.message.reply_text("Maaf, terjadi kesalahan saat mengambil ringkasan.")
+
+async def process_greeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menangani sapaan dari pengguna."""
+    await update.message.reply_text("Halo! Ada yang bisa saya bantu dengan pencatatan keuangan Anda?")
 
 
 # --- Fungsi Handler Lanjutan ---
@@ -332,81 +412,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.error(f"Error deleting transaction: {e}")
             await query.edit_message_text(text="Maaf, terjadi kesalahan saat mencoba menghapus transaksi.")
 
-async def summary_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Memberikan ringkasan transaksi untuk tanggal tertentu. Format: /day DD-MM-YY"""
-    user_id = update.effective_user.id
-
-    try:
-        date_str = context.args[0]
-        day_obj = datetime.datetime.strptime(date_str, "%d-%m-%y").date()
-    except (IndexError, ValueError):
-        await update.message.reply_text("Format salah. Gunakan: /day DD-MM-YY (contoh: /day 31-08-25)")
-        return
-
-    start_of_day = datetime.datetime.combine(day_obj, datetime.time.min)
-    end_of_day = start_of_day + datetime.timedelta(days=1)
-
-    try:
-        response = supabase.table("transactions").select("type, amount").eq("user_id", user_id).gte("created_at", start_of_day.isoformat()).lt("created_at", end_of_day.isoformat()).execute()
-
-        total_income = 0
-        total_expense = 0
-        if response.data:
-            for trx in response.data:
-                if trx['type'] == 'income':
-                    total_income += trx['amount']
-                else:
-                    total_expense += trx['amount']
-
-        summary_message = (
-            f"📊 **Ringkasan untuk {day_obj.strftime('%d %B %Y')}**\n\n"
-            f"Pemasukan: Rp{total_income:,.0f}\n"
-            f"Pengeluaran: Rp{total_expense:,.0f}"
-        )
-        await update.message.reply_html(summary_message)
-
-    except Exception as e:
-        logger.error(f"Error fetching daily summary: {e}")
-        await update.message.reply_text("Maaf, terjadi kesalahan saat mengambil ringkasan harian.")
-
-async def summary_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Memberikan ringkasan transaksi untuk bulan tertentu. Format: /month MM-YY"""
-    user_id = update.effective_user.id
-
-    try:
-        date_str = context.args[0]
-        month_obj = datetime.datetime.strptime(date_str, "%m-%y")
-    except (IndexError, ValueError):
-        await update.message.reply_text("Format salah. Gunakan: /month MM-YY (contoh: /month 08-25)")
-        return
-
-    # Hitung tanggal awal bulan dan awal bulan berikutnya
-    start_of_month = month_obj.replace(day=1)
-    next_month = start_of_month.replace(day=28) + datetime.timedelta(days=4)  # Cara aman untuk ke bulan berikutnya
-    end_of_month = next_month.replace(day=1)
-
-    try:
-        response = supabase.table("transactions").select("type, amount").eq("user_id", user_id).gte("created_at", start_of_month.isoformat()).lt("created_at", end_of_month.isoformat()).execute()
-
-        total_income = 0
-        total_expense = 0
-        if response.data:
-            for trx in response.data:
-                if trx['type'] == 'income':
-                    total_income += trx['amount']
-                else:
-                    total_expense += trx['amount']
-
-        summary_message = (
-            f"📊 **Ringkasan untuk {start_of_month.strftime('%B %Y')}**\n\n"
-            f"Pemasukan: Rp{total_income:,.0f}\n"
-            f"Pengeluaran: Rp{total_expense:,.0f}"
-        )
-        await update.message.reply_html(summary_message)
-
-    except Exception as e:
-        logger.error(f"Error fetching monthly summary: {e}")
-        await update.message.reply_text("Maaf, terjadi kesalahan saat mengambil ringkasan bulanan.")
 
 
 # --- Fungsi Utama Bot ---
@@ -428,18 +433,16 @@ def main() -> None:
             ],
         },
         fallbacks=[
-            CommandHandler("start", start),
-            CommandHandler("day", summary_day),
-            CommandHandler("month", summary_month),
-            CommandHandler("cancel", cancel),
+            CommandHandler("cancel", cancel), # Hanya /cancel yang merupakan fallback dari conversation
         ],
         per_user=True,
         per_message=False,
         allow_reentry=True
     )
 
-    # Daftarkan handler utama (ConversationHandler)
-    application.add_handler(conv_handler)
+    # Daftarkan handler
+    application.add_handler(CommandHandler("start", start)) # /start adalah perintah global
+    application.add_handler(conv_handler) # Conversation handler untuk alur utama
 
 
     # Mulai bot (polling)
