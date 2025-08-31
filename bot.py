@@ -95,7 +95,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         3.  Jika intentnya `greeting` (sapaan), formatnya:
             {{"intent": "greeting"}}
 
-        4.  Jika tidak cocok sama sekali, formatnya:
+        4.  Jika intentnya `request_reset` (meminta hapus semua data), formatnya:
+            {{"intent": "request_reset"}}
+
+        5.  Jika tidak cocok sama sekali, formatnya:
             {{"intent": "unknown"}}
 
         --- CONTOH ---
@@ -105,6 +108,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         - Teks: "laporan bulan ini" -> {{"intent": "query_summary", "query": {{"period": "this_month", "type": "all"}}}}
         - Teks: "cek pengeluaran kemarin" -> {{"intent": "query_summary", "query": {{"period": "yesterday", "type": "expense"}}}}
         - Teks: "pemasukan bulan lalu apa aja?" -> {{"intent": "query_summary", "query": {{"period": "last_month", "type": "income"}}}}
+        - Teks: "hapus semua dataku" -> {{"intent": "request_reset"}}
+        - Teks: "reset dong" -> {{"intent": "request_reset"}}
         - Teks: "halo bot" -> {{"intent": "greeting"}}
         - Teks: "cuaca hari ini gimana" -> {{"intent": "unknown"}}
 
@@ -124,6 +129,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await process_new_transaction(update, context, data.get("transaction", {}))
         elif intent == "query_summary":
             await process_summary_query(update, context, data.get("query", {}))
+        elif intent == "request_reset":
+            await process_reset_request(update, context)
         elif intent == "greeting":
             await process_greeting(update, context)
         else: # intent == "unknown" atau tidak ada intent
@@ -271,6 +278,23 @@ async def process_greeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Menangani sapaan dari pengguna."""
     await update.message.reply_text("Halo! Ada yang bisa saya bantu dengan pencatatan keuangan Anda?")
 
+async def process_reset_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mengirim pesan konfirmasi untuk mereset data."""
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Ya, Saya Yakin", callback_data="confirm_reset:yes"),
+            InlineKeyboardButton("❌ Batal", callback_data="confirm_reset:no"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    warning_text = (
+        "⚠️ <b>Peringatan!</b> ⚠️\n"
+        "Apakah Anda benar-benar yakin ingin menghapus SEMUA data transaksi Anda? "
+        "Tindakan ini tidak dapat dibatalkan."
+    )
+    await update.message.reply_html(warning_text, reply_markup=reply_markup)
+
 
 # --- Fungsi Handler Lanjutan ---
 
@@ -398,6 +422,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         await query.message.reply_text("Silakan kirim detail transaksi yang baru...")
         return AWAITING_EDIT_INPUT
+
+    elif action == "confirm_reset":
+        value = transaction_id_str # Di sini kita "menyalahgunakan" variabel transaction_id_str untuk value
+        if value == "yes":
+            try:
+                delete_response = supabase.table("transactions").delete().eq("user_id", user_id).execute()
+                if delete_response:
+                    await query.edit_message_text(text="✅ Semua data transaksi Anda telah berhasil dihapus.")
+                else:
+                    await query.edit_message_text(text="Gagal menghapus data. Silakan coba lagi.")
+            except Exception as e:
+                logger.error(f"Error resetting data: {e}")
+                await query.edit_message_text(text="Maaf, terjadi kesalahan teknis saat mereset data.")
+        else: # value == "no"
+            await query.edit_message_text(text="Aksi dibatalkan. Data Anda aman.")
 
     elif action == "delete":
         try:
