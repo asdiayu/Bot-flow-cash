@@ -8,8 +8,8 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 from supabase import create_client, Client
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
 # Muat environment variables dari file .env
 load_dotenv()
@@ -125,6 +125,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
                 current_balance = rpc_response.data if rpc_response.data is not None else 0
 
+                # Buat Tombol Inline
+                transaction_id = db_response.data[0]['id']
+                keyboard = [
+                    [InlineKeyboardButton("Hapus Transaksi Ini", callback_data=f"delete:{transaction_id}")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
                 # Kirim konfirmasi ke user
                 confirmation_text = (
                     f"✅ Berhasil dicatat!\n\n"
@@ -133,7 +140,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"Deskripsi: {description}\n\n"
                     f"💰 **Saldo Anda saat ini: Rp{current_balance:,.0f}**"
                 )
-                await processing_message.edit_text(confirmation_text, parse_mode='HTML')
+                await processing_message.edit_text(
+                    confirmation_text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
             else:
                 logger.error(f"Error saving to Supabase: {db_response.error}")
                 await processing_message.edit_text("Maaf, terjadi kesalahan saat menyimpan data. Silakan coba lagi.")
@@ -151,6 +162,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # --- Fungsi Handler Lanjutan ---
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Menangani semua aksi dari tombol inline."""
+    query = update.callback_query
+    await query.answer()  # Memberitahu Telegram bahwa tombol sudah diproses
+
+    # Parsing data dari tombol, format: "aksi:id_transaksi"
+    try:
+        action, transaction_id_str = query.data.split(":")
+        transaction_id = int(transaction_id_str)
+    except (ValueError, IndexError):
+        await query.edit_message_text(text="Error: Data dari tombol tidak valid.")
+        return
+
+    user_id = query.from_user.id
+
+    if action == "delete":
+        try:
+            # Hapus transaksi, pastikan user_id cocok untuk keamanan
+            delete_response = supabase.table("transactions").delete().match({'id': transaction_id, 'user_id': user_id}).execute()
+
+            if delete_response.data:
+                # Hitung ulang saldo setelah dihapus
+                rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
+                current_balance = rpc_response.data if rpc_response.data is not None else 0
+
+                deleted_amount = delete_response.data[0]['amount']
+                deleted_desc = delete_response.data[0]['description']
+
+                await query.edit_message_text(
+                    text=f"- - - - - - - - - - - - - - -\n"
+                         f"❌ **Transaksi Dihapus**\n"
+                         f"Deskripsi: {deleted_desc}\n"
+                         f"Jumlah: Rp{deleted_amount:,.0f}\n"
+                         f"- - - - - - - - - - - - - - -\n"
+                         f"💰 Saldo Anda sekarang: Rp{current_balance:,.0f}",
+                    parse_mode='HTML'
+                )
+            else:
+                await query.edit_message_text(text="Gagal menghapus: Transaksi tidak ditemukan atau Anda tidak punya hak akses.")
+
+        except Exception as e:
+            logger.error(f"Error deleting transaction: {e}")
+            await query.edit_message_text(text="Maaf, terjadi kesalahan saat mencoba menghapus transaksi.")
 
 async def summary_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Memberikan ringkasan transaksi untuk tanggal tertentu. Format: /day DD-MM-YY"""
@@ -241,6 +296,7 @@ def main() -> None:
     application.add_handler(CommandHandler("day", summary_day))
     application.add_handler(CommandHandler("month", summary_month))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(button_handler))
 
     # Mulai bot (polling)
     logger.info("Bot dimulai...")
