@@ -1,6 +1,8 @@
 import os
 import logging
 import json
+import datetime
+import calendar
 from dotenv import load_dotenv
 
 import google.generativeai as genai
@@ -31,7 +33,7 @@ if not all([TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
 
 # Konfigurasi Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-pro')
+gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
 # Inisialisasi Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -133,6 +135,85 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await processing_message.edit_text("Maaf, terjadi kesalahan yang tidak terduga. Tim kami sudah diberitahu.")
 
 
+# --- Fungsi Handler Lanjutan ---
+
+async def summary_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Memberikan ringkasan transaksi untuk tanggal tertentu. Format: /day DD-MM-YY"""
+    user_id = update.effective_user.id
+
+    try:
+        date_str = context.args[0]
+        day_obj = datetime.datetime.strptime(date_str, "%d-%m-%y").date()
+    except (IndexError, ValueError):
+        await update.message.reply_text("Format salah. Gunakan: /day DD-MM-YY (contoh: /day 31-08-25)")
+        return
+
+    start_of_day = datetime.datetime.combine(day_obj, datetime.time.min)
+    end_of_day = start_of_day + datetime.timedelta(days=1)
+
+    try:
+        response = supabase.table("transactions").select("type, amount").eq("user_id", user_id).gte("created_at", start_of_day.isoformat()).lt("created_at", end_of_day.isoformat()).execute()
+
+        total_income = 0
+        total_expense = 0
+        if response.data:
+            for trx in response.data:
+                if trx['type'] == 'income':
+                    total_income += trx['amount']
+                else:
+                    total_expense += trx['amount']
+
+        summary_message = (
+            f"📊 **Ringkasan untuk {day_obj.strftime('%d %B %Y')}**\n\n"
+            f"Pemasukan: Rp{total_income:,.0f}\n"
+            f"Pengeluaran: Rp{total_expense:,.0f}"
+        )
+        await update.message.reply_html(summary_message)
+
+    except Exception as e:
+        logger.error(f"Error fetching daily summary: {e}")
+        await update.message.reply_text("Maaf, terjadi kesalahan saat mengambil ringkasan harian.")
+
+async def summary_month(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Memberikan ringkasan transaksi untuk bulan tertentu. Format: /month MM-YY"""
+    user_id = update.effective_user.id
+
+    try:
+        date_str = context.args[0]
+        month_obj = datetime.datetime.strptime(date_str, "%m-%y")
+    except (IndexError, ValueError):
+        await update.message.reply_text("Format salah. Gunakan: /month MM-YY (contoh: /month 08-25)")
+        return
+
+    # Hitung tanggal awal bulan dan awal bulan berikutnya
+    start_of_month = month_obj.replace(day=1)
+    next_month = start_of_month.replace(day=28) + datetime.timedelta(days=4)  # Cara aman untuk ke bulan berikutnya
+    end_of_month = next_month.replace(day=1)
+
+    try:
+        response = supabase.table("transactions").select("type, amount").eq("user_id", user_id).gte("created_at", start_of_month.isoformat()).lt("created_at", end_of_month.isoformat()).execute()
+
+        total_income = 0
+        total_expense = 0
+        if response.data:
+            for trx in response.data:
+                if trx['type'] == 'income':
+                    total_income += trx['amount']
+                else:
+                    total_expense += trx['amount']
+
+        summary_message = (
+            f"📊 **Ringkasan untuk {start_of_month.strftime('%B %Y')}**\n\n"
+            f"Pemasukan: Rp{total_income:,.0f}\n"
+            f"Pengeluaran: Rp{total_expense:,.0f}"
+        )
+        await update.message.reply_html(summary_message)
+
+    except Exception as e:
+        logger.error(f"Error fetching monthly summary: {e}")
+        await update.message.reply_text("Maaf, terjadi kesalahan saat mengambil ringkasan bulanan.")
+
+
 # --- Fungsi Utama Bot ---
 
 def main() -> None:
@@ -142,6 +223,8 @@ def main() -> None:
 
     # Daftarkan handler
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("day", summary_day))
+    application.add_handler(CommandHandler("month", summary_month))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Mulai bot (polling)
