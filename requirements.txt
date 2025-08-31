@@ -1,0 +1,11 @@
+# Telegram Bot Library
+python-telegram-bot[job-queue]
+
+# Supabase Python Client
+supabase
+
+# Google Gemini AI Client
+google-generativeai
+
+# For loading .env files
+python-dotenv
