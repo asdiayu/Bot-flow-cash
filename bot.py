@@ -399,12 +399,18 @@ async def process_financial_report(update: Update, context: ContextTypes.DEFAULT
         cleaned_response_text = analysis_response.text.strip().replace('```json', '').replace('```', '')
         analysis_data = json.loads(cleaned_response_text)
 
-        # 5. Tampilkan hasil (untuk saat ini hanya teks)
+        # 5. Tampilkan hasil dengan aman
+        analysis_text = analysis_data.get('analysis_text', "AI tidak memberikan ringkasan teks saat ini.")
+        actionable_tips = analysis_data.get('actionable_tips', [])
+        chart_data = analysis_data.get('chart_data')
+
         report_text = f"📊 <b>Laporan Analisis Keuangan untuk {period_str}</b>\n\n"
-        report_text += f"{analysis_data['analysis_text']}\n\n"
-        report_text += "<b>Nasihat untuk Anda:</b>\n"
-        for tip in analysis_data['actionable_tips']:
-            report_text += f"- <i>{tip}</i>\n"
+        report_text += f"{analysis_text}\n"
+
+        if actionable_tips:
+            report_text += "\n<b>Nasihat untuk Anda:</b>\n"
+            for tip in actionable_tips:
+                report_text += f"- <i>{tip}</i>\n"
 
         # Hapus pesan "menganalisis..."
         await processing_message.delete()
@@ -413,7 +419,6 @@ async def process_financial_report(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_html(report_text)
 
         # Buat dan kirim chart jika ada datanya
-        chart_data = analysis_data.get('chart_data')
         if chart_data and chart_data.get('labels') and chart_data.get('values'):
             chart_buffer = generate_pie_chart(chart_data)
             await update.message.reply_photo(photo=chart_buffer)
