@@ -170,10 +170,10 @@ async def process_new_transaction(update: Update, context: ContextTypes.DEFAULT_
                 # Kirim konfirmasi ke user
                 confirmation_text = (
                     f"✅ Berhasil dicatat!\n\n"
-                    f"Jenis: {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
-                    f"Jumlah: Rp{amount:,.0f}\n"
-                    f"Deskripsi: {description}\n\n"
-                    f"💰 **Saldo Anda saat ini: Rp{current_balance:,.0f}**"
+                    f"<b>Jenis:</b> {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
+                    f"<b>Jumlah:</b> Rp{amount:,.0f}\n"
+                    f"<b>Deskripsi:</b> {description}\n\n"
+                    f"💰 <b>Saldo Anda saat ini: Rp{current_balance:,.0f}</b>"
                 )
                 await update.message.reply_html(confirmation_text, reply_markup=reply_markup)
             else:
@@ -220,7 +220,7 @@ async def process_summary_query(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     try:
-        query = supabase.table("transactions").select("type, amount").eq("user_id", user_id).gte("created_at", start_date.isoformat()).lt("created_at", end_date.isoformat())
+        query = supabase.table("transactions").select("type, amount, description").eq("user_id", user_id).gte("created_at", start_date.isoformat()).lt("created_at", end_date.isoformat())
 
         if query_type != "all":
             query = query.eq("type", query_type)
@@ -229,22 +229,38 @@ async def process_summary_query(update: Update, context: ContextTypes.DEFAULT_TY
 
         total_income = 0
         total_expense = 0
+        income_details = []
+        expense_details = []
+
         if response.data:
             for trx in response.data:
+                amount = trx['amount']
+                description = trx['description']
                 if trx['type'] == 'income':
-                    total_income += trx['amount']
+                    total_income += amount
+                    income_details.append(f"- Rp{amount:,.0f}: <i>{description}</i>")
                 else:
-                    total_expense += trx['amount']
+                    total_expense += amount
+                    expense_details.append(f"- Rp{amount:,.0f}: <i>{description}</i>")
 
         # Buat pesan summary
-        title = f"📊 **Ringkasan untuk {period_str}**\n\n"
+        title = f"📊 <b>Ringkasan untuk {period_str}</b>\n"
+        summary_message = title
+
+        if query_type in ["all", "income"] and income_details:
+            summary_message += "\n<b>Rincian Pemasukan:</b>\n" + "\n".join(income_details) + "\n"
+
+        if query_type in ["all", "expense"] and expense_details:
+            summary_message += "\n<b>Rincian Pengeluaran:</b>\n" + "\n".join(expense_details) + "\n"
+
+        summary_message += "\n<b>Total:</b>\n"
         summary_parts = []
         if query_type == "all" or query_type == "income":
             summary_parts.append(f"Pemasukan: Rp{total_income:,.0f}")
         if query_type == "all" or query_type == "expense":
             summary_parts.append(f"Pengeluaran: Rp{total_expense:,.0f}")
+        summary_message += "\n".join(summary_parts)
 
-        summary_message = title + "\n".join(summary_parts)
         await update.message.reply_html(summary_message)
 
     except Exception as e:
@@ -328,11 +344,11 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
             # Buat teks konfirmasi baru
             confirmation_text = (
-                f"✅ **Transaksi Diperbarui!**\n\n"
-                f"Jenis: {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
-                f"Jumlah: Rp{amount:,.0f}\n"
-                f"Deskripsi: {description}\n\n"
-                f"💰 **Saldo Anda saat ini: Rp{current_balance:,.0f}**"
+                f"✅ <b>Transaksi Diperbarui!</b>\n\n"
+                f"<b>Jenis:</b> {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
+                f"<b>Jumlah:</b> Rp{amount:,.0f}\n"
+                f"<b>Deskripsi:</b> {description}\n\n"
+                f"💰 <b>Saldo Anda saat ini: Rp{current_balance:,.0f}</b>"
             )
 
             # Edit pesan asli
@@ -397,12 +413,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 deleted_desc = delete_response.data[0]['description']
 
                 await query.edit_message_text(
-                    text=f"- - - - - - - - - - - - - - -\n"
-                         f"❌ **Transaksi Dihapus**\n"
-                         f"Deskripsi: {deleted_desc}\n"
-                         f"Jumlah: Rp{deleted_amount:,.0f}\n"
-                         f"- - - - - - - - - - - - - - -\n"
-                         f"💰 Saldo Anda sekarang: Rp{current_balance:,.0f}",
+                    text=f"<s>- - - - - - - - - - - - - - -</s>\n"
+                         f"❌ <b>Transaksi Dihapus</b>\n"
+                         f"<b>Deskripsi:</b> {deleted_desc}\n"
+                         f"<b>Jumlah:</b> Rp{deleted_amount:,.0f}\n"
+                         f"<s>- - - - - - - - - - - - - - -</s>\n"
+                         f"💰 <b>Saldo Anda sekarang: Rp{current_balance:,.0f}</b>",
                     parse_mode='HTML'
                 )
             else:
