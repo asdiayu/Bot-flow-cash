@@ -3,6 +3,8 @@ import logging
 import json
 import datetime
 import calendar
+import io
+import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
 import google.generativeai as genai
@@ -79,7 +81,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         # Prompt untuk Gemini AI V2 - Router Intent
         prompt = f"""
-        Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "query_balance", "greeting", "request_reset", atau "unknown".
+        Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "query_balance", "request_financial_report", "greeting", "request_reset", atau "unknown".
         Kemudian, ekstrak informasi relevan berdasarkan intent tersebut.
 
         Teks Pengguna: "{user_text}"
@@ -87,8 +89,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         --- FORMAT JSON OUTPUT ---
         1.  Jika intentnya `log_transaction`, formatnya:
-            {{"intent": "log_transaction", "transaction": {{"type": "income" | "expense", "amount": <float>, "description": "<string>"}}}}
+            {{"intent": "log_transaction", "transaction": {{"type": "income" | "expense", "amount": <float>, "description": "<string>", "category": "<string>"}}}}
             - Aturan: Gunakan kata kunci 'beli', 'bayar', 'biaya' untuk 'expense'. Gunakan 'dapat', 'gaji', 'terima' untuk 'income'.
+            - Kategori umum: Makanan & Minuman, Transportasi, Tagihan, Belanja, Hiburan, Gaji, Bonus, Lainnya. Kategorikan sebaik mungkin.
 
         2.  Jika intentnya `query_summary`, formatnya:
             {{"intent": "query_summary", "query": {{"period": "<string>", "type": "all" | "income" | "expense"}}}}
@@ -98,7 +101,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         3.  Jika intentnya `query_balance` (cek total saldo), formatnya:
             {{"intent": "query_balance"}}
 
-        4.  Jika intentnya `greeting` (sapaan), formatnya:
+        4.  Jika intentnya `request_financial_report` (meminta analisis), ekstrak juga periodenya:
+            {{"intent": "request_financial_report", "query": {{"period": "<string>"}}}}
+            - `period` bisa berupa: "this_month", "last_month".
+
+        5.  Jika intentnya `greeting` (sapaan), formatnya:
             {{"intent": "greeting"}}
 
         5.  Jika intentnya `request_reset` (meminta hapus semua data), formatnya:
@@ -108,12 +115,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             {{"intent": "unknown"}}
 
         --- CONTOH ---
-        - Teks: "beli kopi 25000" -> {{"intent": "log_transaction", "transaction": {{"type": "expense", "amount": 25000, "description": "beli kopi"}}}}
-        - Teks: "dapat gaji 5jt" -> {{"intent": "log_transaction", "transaction": {{"type": "income", "amount": 5000000, "description": "dapat gaji"}}}}
+        - Teks: "beli kopi 25000" -> {{"intent": "log_transaction", "transaction": {{"type": "expense", "amount": 25000, "description": "beli kopi", "category": "Makanan & Minuman"}}}}
+        - Teks: "dapat gaji 5jt" -> {{"intent": "log_transaction", "transaction": {{"type": "income", "amount": 5000000, "description": "dapat gaji", "category": "Gaji"}}}}
+        - Teks: "bayar tagihan listrik 200rb" -> {{"intent": "log_transaction", "transaction": {{"type": "expense", "amount": 200000, "description": "bayar tagihan listrik", "category": "Tagihan"}}}}
         - Teks: "summary hari ini" -> {{"intent": "query_summary", "query": {{"period": "today", "type": "all"}}}}
         - Teks: "laporan bulan ini" -> {{"intent": "query_summary", "query": {{"period": "this_month", "type": "all"}}}}
         - Teks: "cek pengeluaran kemarin" -> {{"intent": "query_summary", "query": {{"period": "yesterday", "type": "expense"}}}}
         - Teks: "pemasukan bulan lalu apa aja?" -> {{"intent": "query_summary", "query": {{"period": "last_month", "type": "income"}}}}
+        - Teks: "beri aku analisis keuangan bulan ini" -> {{"intent": "request_financial_report", "query": {{"period": "this_month"}}}}
+        - Teks: "gimana keuanganku bulan lalu?" -> {{"intent": "request_financial_report", "query": {{"period": "last_month"}}}}
         - Teks: "saldo saya berapa?" -> {{"intent": "query_balance"}}
         - Teks: "uangku sisa berapa" -> {{"intent": "query_balance"}}
         - Teks: "hapus semua dataku" -> {{"intent": "request_reset"}}
@@ -139,6 +149,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await process_summary_query(update, context, data.get("query", {}))
         elif intent == "request_reset":
             await process_reset_request(update, context)
+        elif intent == "request_financial_report":
+            await process_financial_report(update, context, data.get("query", {}))
         elif intent == "query_balance":
             await process_balance_query(update, context)
         elif intent == "greeting":
@@ -157,6 +169,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return
 
 
+# --- Fungsi Helper ---
+
+def generate_pie_chart(chart_data: dict) -> io.BytesIO:
+    """Membuat gambar grafik lingkaran dari data dan mengembalikannya sebagai buffer byte."""
+    labels = chart_data.get('labels', [])
+    values = chart_data.get('values', [])
+
+    fig, ax = plt.subplots()
+    ax.pie(values, labels=labels, autopct='%1.1f%%', startangle=90)
+    ax.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    plt.close(fig) # Tutup figure untuk membebaskan memori
+    return buf
+
+
 # --- Fungsi Logika Bisnis ---
 
 async def process_new_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE, transaction_data: dict):
@@ -166,12 +196,13 @@ async def process_new_transaction(update: Update, context: ContextTypes.DEFAULT_
     transaction_type = transaction_data.get("type")
     amount = transaction_data.get("amount")
     description = transaction_data.get("description")
+    category = transaction_data.get("category", "Lainnya") # Default ke 'Lainnya' jika AI tidak menemukan
 
     # Validasi data dari Gemini
     if transaction_type in ["income", "expense"] and isinstance(amount, (int, float)) and amount > 0 and description:
         try:
             # Simpan ke Supabase
-            payload = { "user_id": user_id, "type": transaction_type, "amount": amount, "description": description }
+            payload = { "user_id": user_id, "type": transaction_type, "amount": amount, "description": description, "category": category }
             db_response = supabase.table("transactions").insert(payload).execute()
 
             if db_response.data:
@@ -301,6 +332,95 @@ async def process_balance_query(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception as e:
         logger.error(f"Error fetching balance query: {e}")
         await update.message.reply_text("Maaf, terjadi kesalahan saat mengambil saldo Anda.")
+
+async def process_financial_report(update: Update, context: ContextTypes.DEFAULT_TYPE, query_data: dict):
+    """Membuat laporan analisis keuangan lengkap dengan nasihat AI dan grafik."""
+    user_id = update.effective_user.id
+    period = query_data.get("period", "this_month")
+
+    processing_message = await update.message.reply_text("🔍 Menganalisis data keuangan Anda, ini mungkin perlu beberapa saat...")
+
+    # Tentukan rentang tanggal
+    today = datetime.date.today()
+    start_date, end_date = None, None
+    if period == "this_month":
+        start_date = today.replace(day=1)
+        next_month = start_date.replace(day=28) + datetime.timedelta(days=4)
+        end_date = next_month.replace(day=1)
+        period_str = f"bulan {start_date.strftime('%B %Y')}"
+    elif period == "last_month":
+        first_day_of_current_month = today.replace(day=1)
+        end_date = first_day_of_current_month
+        start_date = (end_date - datetime.timedelta(days=1)).replace(day=1)
+        period_str = f"bulan {start_date.strftime('%B %Y')}"
+    else:
+        await processing_message.edit_text("Maaf, periode untuk laporan analisis tidak valid.")
+        return
+
+    try:
+        # 1. Ambil semua data transaksi mentah
+        trx_response = supabase.table("transactions").select("description, amount, type, category").eq("user_id", user_id).gte("created_at", start_date.isoformat()).lt("created_at", end_date.isoformat()).execute()
+
+        if not trx_response.data:
+            await processing_message.edit_text(f"Tidak ada data transaksi ditemukan untuk {period_str}.")
+            return
+
+        # 2. Format data mentah untuk AI
+        transactions_list_str = json.dumps(trx_response.data)
+
+        # 3. Buat prompt analis keuangan
+        analyst_prompt = f"""
+        Anda adalah seorang analis keuangan pribadi yang ramah dan suportif.
+        Tugas Anda adalah menganalisis daftar transaksi pengguna dan memberikan wawasan yang bermanfaat.
+
+        Berikut adalah data transaksi pengguna untuk {period_str} dalam format JSON:
+        {transactions_list_str}
+
+        Tugas Analisis:
+        1.  Hitung Total Pemasukan, Total Pengeluaran, dan Uang Bersih (Pemasukan - Pengeluaran).
+        2.  Identifikasi 3 kategori pengeluaran teratas.
+        3.  Berikan ringkasan (1-2 kalimat) tentang kondisi keuangan pengguna bulan ini. Harus positif dan memberi semangat.
+        4.  Berikan 1 atau 2 "Nasihat Actionable" yang spesifik dan mudah dilakukan berdasarkan pola pengeluaran. Contoh: "Pengeluaran terbesar Anda ada di kategori Makanan & Minuman. Mungkin bisa coba kurangi jajan kopi di luar." atau "Anda hebat dalam menabung bulan ini!".
+        5.  (Untuk Chart) Buat ringkasan data untuk pie chart pengeluaran. Kelompokkan 4 kategori teratas, dan sisanya gabungkan menjadi 'Lainnya'.
+
+        Kembalikan hasil analisis Anda HANYA dalam format JSON yang valid seperti ini:
+        {{
+            "analysis_text": "<Ringkasan kondisi keuangan Anda di sini>",
+            "actionable_tips": ["<Nasihat pertama>", "<Nasihat kedua>"],
+            "chart_data": {{
+                "labels": ["Makanan", "Transportasi", "Tagihan", "Hiburan", "Lainnya"],
+                "values": [2000000, 1000000, 800000, 500000, 700000]
+            }}
+        }}
+        """
+
+        # 4. Panggil Gemini
+        analysis_response = gemini_model.generate_content(analyst_prompt)
+        cleaned_response_text = analysis_response.text.strip().replace('```json', '').replace('```', '')
+        analysis_data = json.loads(cleaned_response_text)
+
+        # 5. Tampilkan hasil (untuk saat ini hanya teks)
+        report_text = f"📊 <b>Laporan Analisis Keuangan untuk {period_str}</b>\n\n"
+        report_text += f"{analysis_data['analysis_text']}\n\n"
+        report_text += "<b>Nasihat untuk Anda:</b>\n"
+        for tip in analysis_data['actionable_tips']:
+            report_text += f"- <i>{tip}</i>\n"
+
+        # Hapus pesan "menganalisis..."
+        await processing_message.delete()
+
+        # Kirim teks analisis
+        await update.message.reply_html(report_text)
+
+        # Buat dan kirim chart jika ada datanya
+        chart_data = analysis_data.get('chart_data')
+        if chart_data and chart_data.get('labels') and chart_data.get('values'):
+            chart_buffer = generate_pie_chart(chart_data)
+            await update.message.reply_photo(photo=chart_buffer)
+
+    except Exception as e:
+        logger.error(f"Error processing financial report: {e}")
+        await processing_message.edit_text("Maaf, terjadi kesalahan saat membuat laporan analisis Anda.")
 
 async def process_reset_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Mengirim pesan konfirmasi untuk mereset data."""
