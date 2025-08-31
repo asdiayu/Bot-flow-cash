@@ -400,72 +400,65 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Menangani semua aksi dari tombol inline."""
+    """Menangani semua aksi dari tombol inline secara lebih andal."""
     query = update.callback_query
     await query.answer()  # Memberitahu Telegram bahwa tombol sudah diproses
 
-    # Parsing data dari tombol, format: "aksi:id_transaksi"
-    try:
-        action, transaction_id_str = query.data.split(":")
-        transaction_id = int(transaction_id_str)
-    except (ValueError, IndexError):
-        await query.edit_message_text(text="Error: Data dari tombol tidak valid.")
+    user_id = query.from_user.id
+    parts = query.data.split(":", 1)
+    action = parts[0]
+    value = parts[1] if len(parts) > 1 else None
+
+    if not value:
+        await query.edit_message_text(text="Error: Aksi dari tombol tidak valid.")
         return
 
-    user_id = query.from_user.id
+    if action == "edit" or action == "delete":
+        try:
+            transaction_id = int(value)
+        except (ValueError, TypeError):
+            await query.edit_message_text(text="Error: ID transaksi pada tombol tidak valid.")
+            return
 
-    if action == "edit":
-        # Simpan ID transaksi yang akan diedit di user_data
-        context.user_data['edit_transaction_id'] = transaction_id
-        # Simpan juga ID pesan asli agar bisa kita edit nanti
-        context.user_data['original_message_id'] = query.message.message_id
+        if action == "edit":
+            context.user_data['edit_transaction_id'] = transaction_id
+            context.user_data['original_message_id'] = query.message.message_id
+            await query.message.reply_text("Silakan kirim detail transaksi yang baru...")
+            return AWAITING_EDIT_INPUT
 
-        await query.message.reply_text("Silakan kirim detail transaksi yang baru...")
-        return AWAITING_EDIT_INPUT
+        elif action == "delete":
+            try:
+                delete_response = supabase.table("transactions").delete().match({'id': transaction_id, 'user_id': user_id}).execute()
+                if delete_response.data:
+                    rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
+                    current_balance = rpc_response.data if rpc_response.data is not None else 0
+                    deleted_amount = delete_response.data[0]['amount']
+                    deleted_desc = delete_response.data[0]['description']
+                    await query.edit_message_text(
+                        text=f"<s>- - - - - - - - - - - - - - -</s>\n"
+                             f"❌ <b>Transaksi Dihapus</b>\n"
+                             f"<b>Deskripsi:</b> {deleted_desc}\n"
+                             f"<b>Jumlah:</b> Rp{deleted_amount:,.0f}\n"
+                             f"<s>- - - - - - - - - - - - - - -</s>\n"
+                             f"💰 <b>Saldo Anda sekarang: Rp{current_balance:,.0f}</b>",
+                        parse_mode='HTML'
+                    )
+                else:
+                    await query.edit_message_text(text="Gagal menghapus: Transaksi tidak ditemukan atau Anda tidak punya hak akses.")
+            except Exception as e:
+                logger.error(f"Error deleting transaction: {e}")
+                await query.edit_message_text(text="Maaf, terjadi kesalahan saat mencoba menghapus transaksi.")
 
     elif action == "confirm_reset":
-        value = transaction_id_str # Di sini kita "menyalahgunakan" variabel transaction_id_str untuk value
         if value == "yes":
             try:
                 delete_response = supabase.table("transactions").delete().eq("user_id", user_id).execute()
-                if delete_response:
-                    await query.edit_message_text(text="✅ Semua data transaksi Anda telah berhasil dihapus.")
-                else:
-                    await query.edit_message_text(text="Gagal menghapus data. Silakan coba lagi.")
+                await query.edit_message_text(text="✅ Semua data transaksi Anda telah berhasil dihapus.")
             except Exception as e:
                 logger.error(f"Error resetting data: {e}")
                 await query.edit_message_text(text="Maaf, terjadi kesalahan teknis saat mereset data.")
-        else: # value == "no"
+        else:  # value == "no"
             await query.edit_message_text(text="Aksi dibatalkan. Data Anda aman.")
-
-    elif action == "delete":
-        try:
-            # Hapus transaksi, pastikan user_id cocok untuk keamanan
-            delete_response = supabase.table("transactions").delete().match({'id': transaction_id, 'user_id': user_id}).execute()
-
-            if delete_response.data:
-                # Hitung ulang saldo setelah dihapus
-                rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
-                current_balance = rpc_response.data if rpc_response.data is not None else 0
-
-                deleted_amount = delete_response.data[0]['amount']
-                deleted_desc = delete_response.data[0]['description']
-
-                await query.edit_message_text(
-                    text=f"<s>- - - - - - - - - - - - - - -</s>\n"
-                         f"❌ <b>Transaksi Dihapus</b>\n"
-                         f"<b>Deskripsi:</b> {deleted_desc}\n"
-                         f"<b>Jumlah:</b> Rp{deleted_amount:,.0f}\n"
-                         f"<s>- - - - - - - - - - - - - - -</s>\n"
-                         f"💰 <b>Saldo Anda sekarang: Rp{current_balance:,.0f}</b>",
-                    parse_mode='HTML'
-                )
-            else:
-                await query.edit_message_text(text="Gagal menghapus: Transaksi tidak ditemukan atau Anda tidak punya hak akses.")
-
-        except Exception as e:
-            logger.error(f"Error deleting transaction: {e}")
-            await query.edit_message_text(text="Maaf, terjadi kesalahan saat mencoba menghapus transaksi.")
 
 
 
