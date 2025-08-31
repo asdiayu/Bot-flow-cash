@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
 import google.generativeai as genai
+from zhipuai import ZhipuAI
 from supabase import create_client, Client
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -49,6 +50,10 @@ if not all([TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
+# Konfigurasi Zhipu AI
+ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")
+zhipu_client = ZhipuAI(api_key=ZHIPU_API_KEY) if ZHIPU_API_KEY else None
+
 # Inisialisasi Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -79,8 +84,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     processing_message = await update.message.reply_text("🧠 Berpikir...")
 
     try:
+        # Prompt untuk Zhipu AI (GLM)
+        zhipu_router_prompt = f"""
+        Analyze the user's text and classify it into one of the following intents: "log_transaction", "query_summary", "query_balance", "request_financial_report", "greeting", "request_reset", or "unknown".
+        User Text: "{user_text}"
+        Today's Date: {datetime.date.today().strftime('%Y-%m-%d')}
+        Extract relevant information based on the intent. Respond ONLY with a valid JSON object.
+
+        JSON Formats:
+        1. log_transaction: {{"intent": "log_transaction", "transaction": {{"type": "income" | "expense", "amount": <float>, "description": "<string>", "category": "<string>"}}}}
+           - Keywords for 'expense': 'beli', 'bayar', 'biaya'. Keywords for 'income': 'dapat', 'gaji', 'terima'.
+           - Common categories: Makanan & Minuman, Transportasi, Tagihan, Belanja, Hiburan, Gaji, Bonus, Lainnya.
+
+        2. query_summary: {{"intent": "query_summary", "query": {{"period": "today" | "yesterday" | "this_month" | "last_month", "type": "all" | "income" | "expense"}}}}
+
+        3. query_balance: {{"intent": "query_balance"}}
+
+        4. request_financial_report: {{"intent": "request_financial_report", "query": {{"period": "this_month" | "last_month"}}}}
+
+        5. greeting: {{"intent": "greeting"}}
+
+        6. request_reset: {{"intent": "request_reset"}}
+
+        7. unknown: {{"intent": "unknown"}}
+
+        Examples:
+        - Text: "beli kopi 25000" -> {{"intent": "log_transaction", "transaction": {{"type": "expense", "amount": 25000, "description": "beli kopi", "category": "Makanan & Minuman"}}}}
+        - Text: "summary hari ini" -> {{"intent": "query_summary", "query": {{"period": "today", "type": "all"}}}}
+        - Text: "saldo saya berapa?" -> {{"intent": "query_balance"}}
+        - Text: "beri aku analisis keuangan bulan ini" -> {{"intent": "request_financial_report", "query": {{"period": "this_month"}}}}
+        """
+
         # Prompt untuk Gemini AI V2 - Router Intent
-        prompt = f"""
+        gemini_router_prompt = f"""
         Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "query_balance", "request_financial_report", "greeting", "request_reset", atau "unknown".
         Kemudian, ekstrak informasi relevan berdasarkan intent tersebut.
 
@@ -133,8 +169,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         Hanya kembalikan JSON yang valid.
         """
-        response = gemini_model.generate_content(prompt)
-        cleaned_response_text = response.text.strip().replace('```json', '').replace('```', '')
+        response_text = get_ai_response(gemini_prompt=gemini_router_prompt, zhipu_prompt=zhipu_router_prompt)
+        if not response_text:
+            await processing_message.edit_text("Maaf, layanan AI sedang tidak tersedia saat ini. Coba beberapa saat lagi.")
+            return
+
+        cleaned_response_text = response_text.strip().replace('```json', '').replace('```', '')
         data = json.loads(cleaned_response_text)
 
         intent = data.get("intent")
@@ -170,6 +210,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # --- Fungsi Helper ---
+
+def get_ai_response(gemini_prompt: str, zhipu_prompt: str) -> str:
+    """
+    Fungsi pusat untuk memanggil AI, dengan logika failover.
+    Mencoba Gemini terlebih dahulu, jika gagal, beralih ke Zhipu AI.
+    """
+    # --- Coba AI Utama: Google Gemini ---
+    try:
+        logger.info("Attempting to call Gemini AI...")
+        response = gemini_model.generate_content(gemini_prompt)
+        if response and response.text:
+            logger.info("Successfully received response from Gemini AI.")
+            return response.text
+        else:
+            logger.warning("Gemini AI returned an empty response.")
+    except Exception as e:
+        logger.warning(f"Gemini AI failed: {e}. Trying Zhipu AI as failover.")
+
+    # --- Coba AI Cadangan: Zhipu AI (GLM) ---
+    if zhipu_client:
+        try:
+            logger.info("Attempting to call Zhipu AI (backup)...")
+            response = zhipu_client.chat.completions.create(
+                model="glm-4-flash",
+                messages=[{"role": "user", "content": zhipu_prompt}],
+                temperature=0.1, # Rendah untuk output JSON yang konsisten
+            )
+            if response and response.choices[0].message.content:
+                logger.info("Successfully received response from Zhipu AI.")
+                return response.choices[0].message.content
+            else:
+                logger.warning("Zhipu AI returned an empty response.")
+        except Exception as e:
+            logger.error(f"Zhipu AI (backup) also failed: {e}")
+    else:
+        logger.warning("Zhipu AI client not configured. Cannot failover.")
+
+    # Jika semua gagal
+    logger.error("All AI providers failed.")
+    return ""
+
 
 def generate_pie_chart(chart_data: dict) -> io.BytesIO:
     """Membuat gambar grafik lingkaran dari data dan mengembalikannya sebagai buffer byte."""
@@ -369,7 +450,19 @@ async def process_financial_report(update: Update, context: ContextTypes.DEFAULT
         transactions_list_str = json.dumps(trx_response.data)
 
         # 3. Buat prompt analis data (lebih "lembut")
-        analyst_prompt = f"""
+        zhipu_analyst_prompt = f"""
+        You are a data assistant. Analyze the user's transaction list and provide insights.
+        Transaction Data: {transactions_list_str}
+        Tasks:
+        1. Calculate total income, expense, and net savings.
+        2. Identify top 3 expense categories.
+        3. Provide a brief, neutral summary of the user's financial state.
+        4. Provide 1-2 interesting "Observation Points". Do not give financial advice.
+        5. Create data for a pie chart of expenses (top 4 categories + 'Others').
+        Respond ONLY with a valid JSON object with keys "analysis_text", "actionable_tips", and "chart_data".
+        """
+
+        gemini_analyst_prompt = f"""
         Anda adalah seorang asisten data yang cerdas dan membantu.
         Tugas Anda adalah menganalisis daftar transaksi pengguna dan menyajikan data dalam format yang mudah dibaca.
 
@@ -394,9 +487,9 @@ async def process_financial_report(update: Update, context: ContextTypes.DEFAULT
         }}
         """
 
-        # 4. Panggil Gemini
-        analysis_response = gemini_model.generate_content(analyst_prompt)
-        cleaned_response_text = analysis_response.text.strip().replace('```json', '').replace('```', '')
+        # 4. Panggil AI dengan failover
+        response_text = get_ai_response(gemini_prompt=gemini_analyst_prompt, zhipu_prompt=zhipu_analyst_prompt)
+        cleaned_response_text = response_text.strip().replace('```json', '').replace('```', '')
 
         # Tambahkan pengecekan respons kosong
         if not cleaned_response_text:
@@ -481,8 +574,20 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     processing_message = await update.message.reply_text("🧠 Menerapkan koreksi Anda...")
 
     try:
+        # Prompt untuk Zhipu AI (GLM)
+        zhipu_edit_prompt = f"""
+        You are a transaction editor. Given the original transaction and the user's correction, determine the new description and amount.
+        Original Transaction: {{ "description": "{original_trx['description']}", "amount": {original_trx['amount']} }}
+        User's Correction: "{correction_text}"
+        Respond ONLY with a valid JSON object with "description" and "amount" keys.
+
+        Examples:
+        - Correction: "ganti jadi 20rb" -> {{"description": "{original_trx['description']}", "amount": 20000}}
+        - Correction: "ternyata buat bayar parkir" -> {{"description": "bayar parkir", "amount": {original_trx['amount']}}}
+        """
+
         # Prompt AI khusus untuk menginterpretasikan koreksi
-        edit_prompt = f"""
+        gemini_edit_prompt = f"""
         Anda adalah asisten editor transaksi keuangan. Tugas Anda adalah memodifikasi transaksi lama berdasarkan teks koreksi dari pengguna.
 
         Transaksi Asli:
@@ -505,8 +610,16 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
         Hanya kembalikan JSON yang valid.
         """
-        response = gemini_model.generate_content(edit_prompt)
-        cleaned_response_text = response.text.strip().replace('```json', '').replace('```', '')
+        response_text = get_ai_response(gemini_prompt=gemini_edit_prompt, zhipu_prompt=zhipu_edit_prompt)
+        if not response_text:
+            await processing_message.edit_text("Maaf, layanan AI sedang tidak tersedia saat ini. Coba beberapa saat lagi.")
+            # Bersihkan state dan akhiri conversation
+            context.user_data.pop('edit_transaction_id', None)
+            context.user_data.pop('original_trx', None)
+            context.user_data.pop('original_message_id', None)
+            return ConversationHandler.END
+
+        cleaned_response_text = response_text.strip().replace('```json', '').replace('```', '')
         data = json.loads(cleaned_response_text)
 
         new_amount = data.get("amount")

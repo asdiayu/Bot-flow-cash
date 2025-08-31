@@ -12,3 +12,6 @@ python-dotenv
 
 # For generating charts
 matplotlib
+
+# For Zhipu AI (GLM) Failover
+zhipuai
