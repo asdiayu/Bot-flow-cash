@@ -4,6 +4,7 @@ import json
 import datetime
 import calendar
 import io
+import tempfile
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 
@@ -44,11 +45,33 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Pastikan semua variabel lingkungan ada
 if not all([TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
-    raise ValueError("Pastikan semua variabel lingkungan (TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY) sudah diatur di file .env")
+    missing_vars = []
+    if not TELEGRAM_BOT_TOKEN:
+        missing_vars.append("TELEGRAM_BOT_TOKEN")
+    if not GEMINI_API_KEY:
+        missing_vars.append("GEMINI_API_KEY")
+    if not SUPABASE_URL:
+        missing_vars.append("SUPABASE_URL")
+    if not SUPABASE_KEY:
+        missing_vars.append("SUPABASE_KEY")
+    raise ValueError(f"Pastikan semua variabel lingkungan sudah diatur di file .env. Variabel yang hilang: {', '.join(missing_vars)}")
 
 # Konfigurasi Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+
+# Cek apakah API key valid dengan mencoba membuat model
+try:
+    gemini_model = genai.GenerativeModel('gemini-2.5-flash')
+    # Model khusus untuk transkripsi audio dengan konfigurasi yang dioptimalkan
+    gemini_audio_model = genai.GenerativeModel('gemini-2.5-flash', 
+                                              generation_config={"temperature": 0.5, 
+                                                                "top_p": 0.95, 
+                                                                "top_k": 40, 
+                                                                "max_output_tokens": 1024})
+    logger.info("Gemini API key valid dan model berhasil dibuat")
+except Exception as e:
+    logger.error(f"Error saat mengkonfigurasi Gemini AI: {e}")
+    raise ValueError("Gemini API key tidak valid atau ada masalah dengan konfigurasi")
 
 # Konfigurasi Zhipu AI
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY")
@@ -62,35 +85,143 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Menangani pesan suara, mentranskripsinya, dan memproses teksnya."""
     processing_message = await update.message.reply_text("🎤 Mendengarkan pesan suara Anda...")
+    temp_filename = None
     try:
+        # Cek apakah API key Gemini valid sebelum melanjutkan
+        if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
+            logger.error("Gemini API key tidak valid atau belum diatur")
+            await processing_message.edit_text("Maaf, fitur transkripsi suara belum dikonfigurasi dengan benar.")
+            return
+            
         voice = update.message.voice
+        if voice is None:
+            logger.error("Voice object is None")
+            await processing_message.edit_text("Maaf, terjadi kesalahan dengan format pesan suara Anda.")
+            return
+            
         voice_file = await voice.get_file()
+        if voice_file is None:
+            logger.error("Voice file is None")
+            await processing_message.edit_text("Maaf, tidak dapat mengakses file pesan suara Anda.")
+            return
+        
+        logger.info(f"Menerima voice message dengan file ID: {voice_file.file_id} dan MIME type: {voice.mime_type}")
+
+        # Cek durasi voice message
+        duration = voice.duration
+        if duration:
+            logger.info(f"Durasi voice message: {duration} detik")
+            if duration < 1:
+                logger.warning("Voice message terlalu pendek")
+                await processing_message.edit_text("Maaf, pesan suara Anda terlalu pendek untuk ditranskripsikan.")
+                return
+            elif duration > 120:  # 2 menit
+                logger.warning("Voice message terlalu panjang")
+                await processing_message.edit_text("Maaf, pesan suara Anda terlalu panjang. Silakan kirim pesan yang lebih pendek.")
+                return
 
         # Download file ke memori
         voice_data = io.BytesIO()
         await voice_file.download_to_memory(voice_data)
         voice_data.seek(0)
+        
+        # Log ukuran file
+        voice_data_size = voice_data.getbuffer().nbytes
+        logger.info(f"Ukuran file voice message: {voice_data_size} bytes")
+        
+        if voice_data_size == 0:
+            logger.error("Voice data is empty")
+            await processing_message.edit_text("Maaf, pesan suara Anda kosong.")
+            return
+            
+        # Cek ukuran file (maksimal 20MB)
+        max_file_size = 20 * 1024 * 1024  # 20MB
+        if voice_data_size > max_file_size:
+            logger.warning(f"Voice message terlalu besar: {voice_data_size} bytes")
+            await processing_message.edit_text("Maaf, pesan suara Anda terlalu besar. Silakan kirim pesan yang lebih pendek.")
+            return
+
+        # Menangani MIME type khusus untuk voice message Telegram
+        mime_type = voice.mime_type
+        if mime_type == "audio/ogg":
+            # Untuk voice message Telegram, kita gunakan audio/ogg sebagai MIME type
+            logger.info("Menggunakan MIME type audio/ogg untuk voice message Telegram")
+        elif mime_type is None:
+            # Default MIME type jika tidak tersedia
+            mime_type = "audio/ogg"
+            logger.info("Menggunakan MIME type default audio/ogg")
+        else:
+            logger.info(f"Menggunakan MIME type: {mime_type}")
+            
+        # Validasi MIME type
+        supported_mime_types = ["audio/ogg", "audio/wav", "audio/mp3", "audio/mpeg"]
+        if mime_type not in supported_mime_types:
+            logger.warning(f"MIME type tidak didukung: {mime_type}")
+            await processing_message.edit_text("Maaf, format audio pesan suara Anda tidak didukung. Silakan kirim pesan suara dalam format OGG.")
+            return
 
         # Upload file audio ke Gemini
-        # Gemini API dapat menangani berbagai format, .oga (Opus) dari Telegram didukung
-        # Argumen yang benar untuk data dari memori adalah `contents`.
-        audio_file = genai.upload_file(contents=voice_data, mime_type=voice.mime_type)
+        # Menyimpan data ke file sementara karena ada masalah dengan upload langsung dari memori
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_file:
+            voice_data.seek(0)  # Reset pointer ke awal
+            temp_file.write(voice_data.read())
+            temp_filename = temp_file.name
+        
+        # Upload file audio ke Gemini dari file sementara
+        logger.info("Mencoba mengunggah file audio ke Gemini...")
+        try:
+            audio_file = genai.upload_file(path=temp_filename, mime_type=mime_type)
+            logger.info("Berhasil mengunggah file audio ke Gemini")
+            
+            # Cek apakah file berhasil diunggah
+            if not audio_file:
+                logger.error("File audio gagal diunggah ke Gemini")
+                await processing_message.edit_text("Maaf, tidak dapat mengunggah file audio Anda untuk transkripsi.")
+                return
+        except Exception as upload_error:
+            logger.error(f"Error saat mengunggah file audio ke Gemini: {upload_error}")
+            await processing_message.edit_text("Maaf, terjadi kesalahan saat mengunggah file audio Anda.")
+            return
 
-        # Minta transkripsi dari Gemini
-        prompt = "Transkripsikan audio ini ke dalam teks bahasa Indonesia."
-        response = gemini_model.generate_content([prompt, audio_file])
+        # Minta transkripsi dari Gemini menggunakan model khusus audio
+        prompt = "Transkripsikan audio ini ke dalam teks bahasa Indonesia dengan akurat."
+        logger.info("Mengirim permintaan transkripsi ke Gemini...")
+        try:
+            response = gemini_audio_model.generate_content([prompt, audio_file])
+            logger.info("Berhasil mendapatkan respons dari Gemini")
+        except Exception as generate_error:
+            logger.error(f"Error saat meminta transkripsi dari Gemini: {generate_error}")
+            await processing_message.edit_text("Maaf, terjadi kesalahan saat meminta transkripsi dari Gemini.")
+            return
 
-        if response and response.text:
-            transcribed_text = response.text
-            await processing_message.edit_text(f"Saya mendengar Anda berkata: \"{transcribed_text}\"\n\nSekarang saya proses...")
-            # Panggil prosesor teks inti
-            await process_text_with_ai(update, context, transcribed_text, processing_message)
+        if response and hasattr(response, 'text') and response.text:
+            transcribed_text = response.text.strip()
+            if transcribed_text:
+                logger.info(f"Transkripsi berhasil: {transcribed_text}")
+                await processing_message.edit_text(f"Saya mendengar Anda berkata: \"{transcribed_text}\"\n\nSekarang saya proses...")
+                # Panggil prosesor teks inti
+                await process_text_with_ai(update, context, transcribed_text, processing_message)
+            else:
+                logger.warning("Transkripsi dari Gemini kosong")
+                await processing_message.edit_text("Maaf, hasil transkripsi pesan suara Anda kosong.")
         else:
+            logger.warning("Respons dari Gemini kosong atau tidak valid")
             await processing_message.edit_text("Maaf, saya tidak bisa mentranskripsi pesan suara Anda saat ini.")
 
     except Exception as e:
-        logger.error(f"Error handling voice message: {e}")
-        await processing_message.edit_text("Maaf, terjadi kesalahan saat memproses pesan suara Anda.")
+        logger.error(f"Error handling voice message: {e}", exc_info=True)
+        await processing_message.edit_text("Maaf, terjadi kesalahan saat memproses pesan suara Anda. Silakan coba lagi.")
+    finally:
+        # Hapus file sementara jika ada
+        try:
+            if temp_filename and os.path.exists(temp_filename):
+                os.remove(temp_filename)
+                logger.info("File sementara berhasil dihapus")
+        except Exception as cleanup_error:
+            logger.error(f"Error saat menghapus file sementara: {cleanup_error}")
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Mengirim pesan sambutan."""
