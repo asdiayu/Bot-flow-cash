@@ -304,7 +304,8 @@ async def process_new_transaction(update: Update, context: ContextTypes.DEFAULT_
                     f"✅ Berhasil dicatat!\n\n"
                     f"<b>Jenis:</b> {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
                     f"<b>Jumlah:</b> Rp{amount:,.0f}\n"
-                    f"<b>Deskripsi:</b> {description}\n\n"
+                    f"<b>Deskripsi:</b> {description}\n"
+                    f"<b>Kategori:</b> {category}\n\n"
                     f"💰 <b>Saldo Anda saat ini: Rp{current_balance:,.0f}</b>"
                 )
                 await update.message.reply_html(confirmation_text, reply_markup=reply_markup)
@@ -546,18 +547,6 @@ async def process_reset_request(update: Update, context: ContextTypes.DEFAULT_TY
 
 # --- Fungsi Handler Lanjutan ---
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Membatalkan sesi edit yang sedang berlangsung."""
-    if 'edit_transaction_id' in context.user_data:
-        context.user_data.pop('edit_transaction_id', None)
-        context.user_data.pop('original_trx', None)
-        context.user_data.pop('original_message_id', None)
-        await update.message.reply_text("Mode edit dibatalkan.")
-    else:
-        await update.message.reply_text("Tidak ada aksi yang sedang berlangsung untuk dibatalkan.")
-
-    return ConversationHandler.END
-
 async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Menangani input koreksi dari pengguna dengan konteks transaksi lama."""
     user_id = update.effective_user.id
@@ -626,11 +615,12 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         new_description = data.get("description")
 
         if isinstance(new_amount, (int, float)) and new_description:
-            # Dapatkan tipe transaksi lama, karena tipe tidak bisa diubah
-            original_type_response = supabase.table("transactions").select("type").eq("id", edit_transaction_id).single().execute()
-            transaction_type = original_type_response.data['type']
+            # Dapatkan tipe dan kategori transaksi lama
+            original_data_response = supabase.table("transactions").select("type, category").eq("id", edit_transaction_id).single().execute()
+            transaction_type = original_data_response.data['type']
+            category = original_data_response.data.get('category', 'Lainnya') # Gunakan kategori lama
 
-            payload = {"amount": new_amount, "description": new_description}
+            payload = {"amount": new_amount, "description": new_description, "category": category}
             db_response = supabase.table("transactions").update(payload).eq("id", edit_transaction_id).eq("user_id", user_id).execute()
 
             await processing_message.delete()
@@ -648,7 +638,8 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 f"✅ <b>Transaksi Diperbarui!</b>\n\n"
                 f"<b>Jenis:</b> {'Pemasukan' if transaction_type == 'income' else 'Pengeluaran'}\n"
                 f"<b>Jumlah:</b> Rp{new_amount:,.0f}\n"
-                f"<b>Deskripsi:</b> {new_description}\n\n"
+                f"<b>Deskripsi:</b> {new_description}\n"
+                f"<b>Kategori:</b> {category}\n\n"
                 f"💰 <b>Saldo Anda saat ini: Rp{current_balance:,.0f}</b>"
             )
             await context.bot.edit_message_text(
@@ -721,7 +712,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif action == "cancel_delete":
         try:
-            trx_response = supabase.table("transactions").select("type, amount, description").eq("id", transaction_id).eq("user_id", user_id).single().execute()
+            trx_response = supabase.table("transactions").select("type, amount, description, category").eq("id", transaction_id).eq("user_id", user_id).single().execute()
             if trx_response.data:
                 trx = trx_response.data
                 rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
@@ -735,7 +726,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"✅ Berhasil dicatat!\n\n"
                     f"<b>Jenis:</b> {'Pemasukan' if trx['type'] == 'income' else 'Pengeluaran'}\n"
                     f"<b>Jumlah:</b> Rp{trx['amount']:,.0f}\n"
-                    f"<b>Deskripsi:</b> {trx['description']}\n\n"
+                    f"<b>Deskripsi:</b> {trx['description']}\n"
+                    f"<b>Kategori:</b> {trx.get('category', 'Lainnya')}\n\n"
                     f"💰 <b>Saldo Anda saat ini: Rp{current_balance:,.0f}</b>"
                 )
                 await query.edit_message_text(text=confirmation_text, parse_mode='HTML', reply_markup=reply_markup)
@@ -754,17 +746,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data['edit_transaction_id'] = transaction_id
             context.user_data['original_message_id'] = query.message.message_id
             context.user_data['original_trx'] = original_trx_response.data
+            keyboard = [[InlineKeyboardButton("❌ Batal", callback_data="cancel_edit")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.message.reply_text(
                 "<b>Mode Edit Aktif.</b>\n"
-                "Kirimkan koreksi Anda (misal: 'salah, harusnya 15rb' atau 'deskripsinya jadi beli makan malam').\n"
-                "Ketik /cancel untuk membatalkan.",
-                parse_mode='HTML'
+                "Kirimkan koreksi Anda (misal: 'salah, harusnya 15rb' atau 'deskripsinya jadi beli makan malam').",
+                parse_mode='HTML',
+                reply_markup=reply_markup
             )
             return AWAITING_EDIT_INPUT
         except Exception as e:
             logger.error(f"Error fetching transaction for edit: {e}")
             await query.edit_message_text("Maaf, terjadi kesalahan saat mencoba mengedit.")
             return
+
+    elif action == "cancel_edit":
+        # Hapus pesan "Mode Edit Aktif..."
+        await query.message.delete()
+        # Hapus state dari user_data
+        context.user_data.pop('edit_transaction_id', None)
+        context.user_data.pop('original_trx', None)
+        context.user_data.pop('original_message_id', None)
+        # Tidak perlu return state karena ini bukan bagian dari ConversationHandler
+        return
 
     elif action == "confirm_reset":
         if value == "yes":
@@ -794,7 +798,7 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_input)
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[],
         per_user=True,
         # Izinkan pengguna untuk memulai ulang conversation kapan saja
         allow_reentry=True
@@ -803,7 +807,8 @@ def main() -> None:
     # Daftarkan handler
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler) # Handler untuk alur edit
-    application.add_handler(CallbackQueryHandler(button_handler)) # Handler untuk tombol lain (delete, reset)
+    # Handler untuk semua tombol di luar percakapan edit
+    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(delete|confirm_delete|cancel_delete|confirm_reset|cancel_edit).*"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)) # Handler utama untuk teks
 
     # Mulai bot (polling)
