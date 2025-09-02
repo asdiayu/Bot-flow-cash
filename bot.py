@@ -670,9 +670,9 @@ async def handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Menangani semua aksi dari tombol inline secara lebih andal."""
+    """Menangani semua aksi dari tombol inline dengan urutan logika yang benar."""
     query = update.callback_query
-    await query.answer()  # Memberitahu Telegram bahwa tombol sudah diproses
+    await query.answer()
 
     user_id = query.from_user.id
     parts = query.data.split(":", 1)
@@ -683,59 +683,88 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text(text="Error: Aksi dari tombol tidak valid.")
         return
 
-    if action == "edit" or action == "delete":
+    # Konversi value ke integer jika diperlukan oleh aksi
+    transaction_id = None
+    if action in ["edit", "delete", "confirm_delete", "cancel_delete"]:
         try:
             transaction_id = int(value)
         except (ValueError, TypeError):
             await query.edit_message_text(text="Error: ID transaksi pada tombol tidak valid.")
             return
 
-        if action == "edit":
-            # Ambil data transaksi lama untuk diberikan sebagai konteks ke AI
-            try:
-                original_trx_response = supabase.table("transactions").select("description, amount").eq("id", transaction_id).eq("user_id", user_id).single().execute()
-                if not original_trx_response.data:
-                    await query.edit_message_text("Error: Transaksi asli tidak ditemukan.")
-                    return
+    # --- Rute Aksi ---
+    if action == "delete":
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Ya, Hapus", callback_data=f"confirm_delete:{transaction_id}"),
+                InlineKeyboardButton("❌ Batal", callback_data=f"cancel_delete:{transaction_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text="Apakah Anda yakin ingin menghapus transaksi ini?", reply_markup=reply_markup)
 
-                context.user_data['edit_transaction_id'] = transaction_id
-                context.user_data['original_message_id'] = query.message.message_id
-                context.user_data['original_trx'] = original_trx_response.data
-
-                await query.message.reply_text(
-                    "<b>Mode Edit Aktif.</b>\n"
-                    "Kirimkan koreksi Anda (misal: 'salah, harusnya 15rb' atau 'deskripsinya jadi beli makan malam').\n"
-                    "Ketik /cancel untuk membatalkan.",
+    elif action == "confirm_delete":
+        try:
+            delete_response = supabase.table("transactions").delete().match({'id': transaction_id, 'user_id': user_id}).execute()
+            if delete_response.data:
+                rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
+                current_balance = rpc_response.data if rpc_response.data is not None else 0
+                await query.edit_message_text(
+                    text=f"✅ Transaksi telah dihapus.\n\n💰 <b>Saldo Anda sekarang: Rp{current_balance:,.0f}</b>",
                     parse_mode='HTML'
                 )
-                return AWAITING_EDIT_INPUT
-            except Exception as e:
-                logger.error(f"Error fetching transaction for edit: {e}")
-                await query.edit_message_text("Maaf, terjadi kesalahan saat mencoba mengedit.")
-                return
+            else:
+                await query.edit_message_text(text="Gagal menghapus: Transaksi tidak ditemukan atau Anda tidak punya hak akses.")
+        except Exception as e:
+            logger.error(f"Error during confirm_delete: {e}")
+            await query.edit_message_text(text="Maaf, terjadi kesalahan saat mencoba menghapus transaksi.")
 
-        elif action == "delete":
-            try:
-                delete_response = supabase.table("transactions").delete().match({'id': transaction_id, 'user_id': user_id}).execute()
-                if delete_response.data:
-                    rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
-                    current_balance = rpc_response.data if rpc_response.data is not None else 0
-                    deleted_amount = delete_response.data[0]['amount']
-                    deleted_desc = delete_response.data[0]['description']
-                    await query.edit_message_text(
-                        text=f"<s>- - - - - - - - - - - - - - -</s>\n"
-                             f"❌ <b>Transaksi Dihapus</b>\n"
-                             f"<b>Deskripsi:</b> {deleted_desc}\n"
-                             f"<b>Jumlah:</b> Rp{deleted_amount:,.0f}\n"
-                             f"<s>- - - - - - - - - - - - - - -</s>\n"
-                             f"💰 <b>Saldo Anda sekarang: Rp{current_balance:,.0f}</b>",
-                        parse_mode='HTML'
-                    )
-                else:
-                    await query.edit_message_text(text="Gagal menghapus: Transaksi tidak ditemukan atau Anda tidak punya hak akses.")
-            except Exception as e:
-                logger.error(f"Error deleting transaction: {e}")
-                await query.edit_message_text(text="Maaf, terjadi kesalahan saat mencoba menghapus transaksi.")
+    elif action == "cancel_delete":
+        try:
+            trx_response = supabase.table("transactions").select("type, amount, description").eq("id", transaction_id).eq("user_id", user_id).single().execute()
+            if trx_response.data:
+                trx = trx_response.data
+                rpc_response = supabase.rpc('calculate_balance', {'p_user_id': user_id}).execute()
+                current_balance = rpc_response.data if rpc_response.data is not None else 0
+                keyboard = [[
+                    InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{transaction_id}"),
+                    InlineKeyboardButton("❌ Hapus", callback_data=f"delete:{transaction_id}")
+                ]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                confirmation_text = (
+                    f"✅ Berhasil dicatat!\n\n"
+                    f"<b>Jenis:</b> {'Pemasukan' if trx['type'] == 'income' else 'Pengeluaran'}\n"
+                    f"<b>Jumlah:</b> Rp{trx['amount']:,.0f}\n"
+                    f"<b>Deskripsi:</b> {trx['description']}\n\n"
+                    f"💰 <b>Saldo Anda saat ini: Rp{current_balance:,.0f}</b>"
+                )
+                await query.edit_message_text(text=confirmation_text, parse_mode='HTML', reply_markup=reply_markup)
+            else:
+                await query.edit_message_text(text="Gagal membatalkan: Transaksi asli tidak ditemukan lagi.")
+        except Exception as e:
+            logger.error(f"Error during cancel_delete: {e}")
+            await query.edit_message_text(text="Maaf, terjadi kesalahan saat mencoba membatalkan.")
+
+    elif action == "edit":
+        try:
+            original_trx_response = supabase.table("transactions").select("description, amount").eq("id", transaction_id).eq("user_id", user_id).single().execute()
+            if not original_trx_response.data:
+                await query.edit_message_text("Error: Transaksi asli tidak ditemukan.")
+                return
+            context.user_data['edit_transaction_id'] = transaction_id
+            context.user_data['original_message_id'] = query.message.message_id
+            context.user_data['original_trx'] = original_trx_response.data
+            await query.message.reply_text(
+                "<b>Mode Edit Aktif.</b>\n"
+                "Kirimkan koreksi Anda (misal: 'salah, harusnya 15rb' atau 'deskripsinya jadi beli makan malam').\n"
+                "Ketik /cancel untuk membatalkan.",
+                parse_mode='HTML'
+            )
+            return AWAITING_EDIT_INPUT
+        except Exception as e:
+            logger.error(f"Error fetching transaction for edit: {e}")
+            await query.edit_message_text("Maaf, terjadi kesalahan saat mencoba mengedit.")
+            return
 
     elif action == "confirm_reset":
         if value == "yes":
