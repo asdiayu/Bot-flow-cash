@@ -111,23 +111,76 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def process_text_with_ai(update: Update, context: ContextTypes.DEFAULT_TYPE, text_to_process: str, processing_message):
     """Fungsi inti yang mengambil teks, memanggil AI, dan merutekan hasilnya."""
     try:
-        # Prompt untuk Zhipu AI (GLM)
+        # Prompt untuk Zhipu AI (GLM) - Versi Bahasa Inggris
         zhipu_router_prompt = f"""
-        Analyze the user's text and classify it into one of the following intents: "log_transaction", "query_summary", "query_balance", "request_financial_report", "greeting", "request_reset", or "unknown".
+        You are a central AI for a finance bot. Your task is to classify the user's text into an "intent" and extract relevant information into a specified JSON format.
         User Text: "{text_to_process}"
         Today's Date: {datetime.date.today().strftime('%Y-%m-%d')}
-        Extract relevant information based on the intent. Respond ONLY with a valid JSON object.
-        ... (omitted for brevity)
+        ONLY RETURN ONE VALID JSON OBJECT. DO NOT ADD ANY OTHER TEXT.
+
+        Here is the format for each intent:
+        1. intent: "log_transaction" -> {{ "intent": "log_transaction", "transaction": {{ "type": "expense" | "income", "amount": <int>, "description": "<string>", "category": "<string>" }} }}
+           - Category Rules: Choose from "Food & Drink", "Transportation", "Bills", "Shopping", "Entertainment", "Salary", "Gifts", "Other".
+           - Examples:
+             - "buy coffee 5k" -> {{ "intent": "log_transaction", "transaction": {{ "type": "expense", "amount": 5000, "description": "buy coffee", "category": "Food & Drink" }} }}
+             - "salary 5M" -> {{ "intent": "log_transaction", "transaction": {{ "type": "income", "amount": 5000000, "description": "salary", "category": "Salary" }} }}
+        2. intent: "query_summary" -> {{ "intent": "query_summary", "query": {{ "period": "today" | "yesterday" | "this_month" | "last_month", "type": "all" | "expense" | "income" }} }}
+           - Examples:
+             - "summary for today" -> {{ "intent": "query_summary", "query": {{ "period": "today", "type": "all" }} }}
+             - "expenses last month" -> {{ "intent": "query_summary", "query": {{ "period": "last_month", "type": "expense" }} }}
+        3. intent: "request_financial_report" -> {{ "intent": "request_financial_report", "query": {{ "period": "this_month" | "last_month" }} }}
+           - Example: "analyze this month" -> {{ "intent": "request_financial_report", "query": {{ "period": "this_month" }} }}
+        4. intent: "query_balance" -> {{ "intent": "query_balance" }}
+           - Example: "what's my balance?" -> {{ "intent": "query_balance" }}
+        5. intent: "request_reset" -> {{ "intent": "request_reset" }}
+           - Example: "reset all my data" -> {{ "intent": "request_reset" }}
+        6. intent: "greeting" -> {{ "intent": "greeting" }}
+           - Example: "hello" -> {{ "intent": "greeting" }}
+        7. intent: "unknown" -> {{ "intent": "unknown" }}
+           - Example: "weather today" -> {{ "intent": "unknown" }}
         """
 
-        # Prompt untuk Gemini AI V2 - Router Intent
+        # Prompt untuk Gemini AI - Versi Bahasa Indonesia yang Sangat Rinci
         gemini_router_prompt = f"""
-        Anda adalah AI pusat untuk bot keuangan. Tugas Anda adalah menganalisis teks pengguna dan mengklasifikasikannya ke dalam salah satu "intent" berikut: "log_transaction", "query_summary", "query_balance", "request_financial_report", "greeting", "request_reset", atau "unknown".
-        Kemudian, ekstrak informasi relevan berdasarkan intent tersebut.
-
+        Anda adalah AI pusat untuk bot keuangan, ahli dalam menganalisis teks bahasa Indonesia. Tugas Anda adalah mengklasifikasikan teks pengguna ke dalam salah satu "intent" dan mengekstrak informasi relevan ke dalam format JSON yang telah ditentukan.
         Teks Pengguna: "{text_to_process}"
         Tanggal Hari Ini: {datetime.date.today().strftime('%Y-%m-%d')}
-        ... (omitted for brevity)
+        HANYA KEMBALIKAN SATU OBJEK JSON YANG VALID. JANGAN TAMBAHKAN TEKS LAIN.
+
+        Berikut adalah format dan contoh untuk setiap intent:
+        1.  **intent: "log_transaction"**
+            -   Format: {{ "intent": "log_transaction", "transaction": {{ "type": "expense" | "income", "amount": <int>, "description": "<string>", "category": "<string>" }} }}
+            -   Aturan Kategori: Pilih dari "Makanan & Minuman", "Transportasi", "Tagihan", "Belanja", "Hiburan", "Gaji", "Hadiah", "Lainnya".
+            -   Contoh:
+                -   "beli kopi 25rb" -> {{ "intent": "log_transaction", "transaction": {{ "type": "expense", "amount": 25000, "description": "beli kopi", "category": "Makanan & Minuman" }} }}
+                -   "gajian 5jt" -> {{ "intent": "log_transaction", "transaction": {{ "type": "income", "amount": 5000000, "description": "gajian", "category": "Gaji" }} }}
+                -   "dapat hadiah 100.000" -> {{ "intent": "log_transaction", "transaction": {{ "type": "income", "amount": 100000, "description": "dapat hadiah", "category": "Hadiah" }} }}
+
+        2.  **intent: "query_summary"**
+            -   Format: {{ "intent": "query_summary", "query": {{ "period": "today" | "yesterday" | "this_month" | "last_month", "type": "all" | "expense" | "income" }} }}
+            -   Contoh:
+                -   "summary hari ini" -> {{ "intent": "query_summary", "query": {{ "period": "today", "type": "all" }} }}
+                -   "pengeluaran bulan lalu" -> {{ "intent": "query_summary", "query": {{ "period": "last_month", "type": "expense" }} }}
+
+        3.  **intent: "request_financial_report"**
+            -   Format: {{ "intent": "request_financial_report", "query": {{ "period": "this_month" | "last_month" }} }}
+            -   Contoh: "analisa bulan ini" -> {{ "intent": "request_financial_report", "query": {{ "period": "this_month" }} }}
+
+        4.  **intent: "query_balance"**
+            -   Format: {{ "intent": "query_balance" }}
+            -   Contoh: "saldo sekarang berapa?" -> {{ "intent": "query_balance" }}
+
+        5.  **intent: "request_reset"**
+            -   Format: {{ "intent": "request_reset" }}
+            -   Contoh: "reset semua dataku" -> {{ "intent": "request_reset" }}
+
+        6.  **intent: "greeting"**
+            -   Format: {{ "intent": "greeting" }}
+            -   Contoh: "halo" -> {{ "intent": "greeting" }}
+
+        7.  **intent: "unknown"**
+            -   Format: {{ "intent": "unknown" }}
+            -   Contoh: "cuaca hari ini" -> {{ "intent": "unknown" }}
         """
         response_text = get_ai_response(gemini_prompt=gemini_router_prompt, zhipu_prompt=zhipu_router_prompt)
         if not response_text:
