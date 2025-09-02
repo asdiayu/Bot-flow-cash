@@ -73,7 +73,8 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # Upload file audio ke Gemini
         # Gemini API dapat menangani berbagai format, .oga (Opus) dari Telegram didukung
-        audio_file = genai.upload_file(file=voice_data, mime_type=voice.mime_type)
+        # Argumen yang benar untuk data dari memori adalah `contents`.
+        audio_file = genai.upload_file(contents=voice_data, mime_type=voice.mime_type)
 
         # Minta transkripsi dari Gemini
         prompt = "Transkripsikan audio ini ke dalam teks bahasa Indonesia."
